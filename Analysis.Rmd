@@ -1,0 +1,4421 @@
+---
+title: "Supplementary analyses"
+author:
+  - name: Matti Vuorre
+    affiliation: University of Oxford
+    orcid_id: 0000-0001-5052-066X
+date: "`r Sys.Date()`"
+creative_commons: CC BY
+output:
+  distill::distill_article:
+    self_contained: true
+    code_folding: true
+    toc: true
+    toc_depth: 3
+---
+
+```{r packages, include=FALSE}
+library(vcdExtra)
+library(afex)
+library(bayestestR)
+library(emmeans)
+library(ggh4x)
+library(polypoly)
+library(ggbeeswarm)
+library(janitor)
+library(kableExtra)
+library(knitr)
+library(memoise)
+library(patchwork)
+library(readxl)
+library(scales)
+library(brms)
+library(tidybayes)
+library(tidyverse)
+```
+
+```{r setup, include=FALSE}
+# Knitr options
+opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  cache = TRUE,
+  error = TRUE,
+  message = FALSE,
+  fig.align = "center",
+  fig.retina = 2
+)
+
+# Plotting theme
+theme_set(
+  theme_linedraw(base_size = 13) +
+    theme(panel.grid = element_blank())
+)
+
+# MCMC settings (ensure at most 12 cores)
+ncores <- min(parallel::detectCores(logical = FALSE), 12)
+nchains <- 4
+options(brms.backend = "cmdstanr")
+hmc <- list(
+  chains = nchains,
+  cores = nchains,
+  threads = ncores %/% nchains,
+  iter = 3000,
+  warmup = 1500,
+  refresh = 500,
+  adapt_delta = .90,
+  max_treedepth = 10
+)
+
+# Create directory for intermediate files
+dir.create("models", FALSE)
+
+# Automatically save results of waic() with waicm()
+waicm <- memoise(waic, cache = cache_filesystem("models"))
+
+# Contrast coding
+options(contrasts = c(unordered = "contr.sum", ordered = "contr.poly"))
+
+# Figure stuff
+dir.create("figures", FALSE)
+Palette <- c("dodgerblue1", "firebrick1", "dodgerblue4", "firebrick4")
+```
+
+## Preface
+
+This document contains the analyses supporting "Curiosity: The Effects of Feedback and Confidence on the Desire to Know" (Metcalfe et al.). Data and code: <https://osf.io/akxs4/>
+
+## Experiment 1
+
+```{r e1-process}
+dat1 <- read_excel(
+  "data/CuriosityPaperAllExperimentData.xlsx", 
+  sheet = "Exp1"
+) %>% 
+  clean_names() %>% 
+  transmute(
+    subject = factor(subject_number),
+    item = factor(item_number),
+    confidence = as.numeric(confidence),
+    curiosity = as.numeric(curiosity),
+    accuracy = factor(accuracy_lenient, levels = 0:1, labels = c("Error", "Correct"))
+  )
+
+# Subject-mean centered confidence
+dat1 <- dat1 %>%
+  group_by(subject) %>%
+  mutate(
+    confidence_c = confidence - mean(confidence, na.rm = TRUE),
+  ) %>%
+  ungroup()
+
+# Create polynomial predictors
+dat1 <- dat1 %>%
+  poly_add_columns(confidence, degree = 2, prefix = "c", scale_width = 101)
+
+tabyl(dat1, accuracy) %>% 
+  kbl(caption = "Experiment 1 accuracy") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+dat1 <- drop_na(dat1, accuracy)
+```
+
+### Summary
+
+There were a handful of excluded trials due to incorrect determination of accuracy by program.
+
+```{r e1-exclusions}
+dat1 %>%
+  summarise(
+    subjects = length(unique(subject)),
+    items = length(unique(item)),
+    design = subjects * items,
+    actual = sum(n()),
+    errors = sum(accuracy == "Error"),
+    excluded_trials = design - actual
+  ) %>%
+  kbl(caption = "Experiment 1 trials, items, and subjects") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+```{r e1-accuracy}
+dat1 %>%
+  group_by(subject) %>%
+  summarise(p_correct = mean(accuracy == "Correct")) %>%
+  summarise(
+    `Mean proportion correct` = mean(p_correct),
+    `SE proportion correct` = sd(p_correct) / sqrt(n())
+  ) %>%
+  kbl(digits = 2, caption = "Experiment 1 accuracy") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Data figures
+
+#### All participants
+
+```{r e1-data-figure-1, fig.width = 9, fig.height = 9, layout = "l-page", fig.cap = "All participants' raw data"}
+e1_p1 <- dat1 %>%
+  ggplot(aes(confidence, curiosity, group = subject)) +
+  coord_cartesian(ylim = c(0, 100), xlim = c(0, 100)) +
+  scale_x_continuous("Confidence", breaks = pretty_breaks(3)) +
+  scale_y_continuous("Curiosity", breaks = pretty_breaks(3)) +
+  geom_point(shape = 1) +
+  facet_wrap("subject") +
+  theme(
+    aspect.ratio = 1,
+    strip.background = element_blank(),
+    strip.text = element_blank()
+  )
+e1_p1
+```
+
+#### Summary
+
+```{r e1-data-figure-2, fig.cap = "Means and 95%CIs for binned confidence. Empty points are individual participants' mean curiosity at each confidence bin."}
+e1_p2 <- dat1 %>%
+  mutate(confidence = cut(confidence, 3)) %>%
+  group_by(subject, accuracy, confidence) %>%
+  summarise(curiosity = mean(curiosity, na.rm = TRUE)) %>%
+  ggplot(aes(confidence, curiosity)) +
+  coord_cartesian(ylim = c(0, 100)) +
+  scale_x_discrete("Confidence", expand = expansion(.1)) +
+  scale_y_continuous("Curiosity", breaks = pretty_breaks(3)) +
+  geom_quasirandom(
+    width = .1, shape = 1, alpha = 1 / 2
+  ) +
+  stat_summary(
+    fun = mean, geom = "line", aes(group = accuracy),
+    show.legend = FALSE
+  ) +
+  stat_summary(fun.data = mean_cl_boot) +
+  theme(
+    aspect.ratio = 1,
+    strip.background = element_blank(),
+    strip.text = element_blank()
+  )
+e1_p2
+```
+
+### ANOVA
+
+We first conducted an ANOVA using the subjects' means at each of 3 confidence bins. Note degrees of freedom (subjects are dropped because not everyone has observations in each cell)
+
+```{r e1-anova}
+dat1_aov <- dat1 %>%
+  drop_na(curiosity) %>% 
+  select(subject, confidence, curiosity) %>%
+  mutate(conf_bin = cut(confidence, 3)) %>%
+  group_by(subject, conf_bin) %>%
+  summarise(curiosity = mean(curiosity))
+
+fit_aov <- aov_ez(
+  data = dat1_aov,
+  id = "subject",
+  dv = "curiosity",
+  within = "conf_bin"
+)
+anova(fit_aov, intercept = TRUE) %>%
+  kbl(
+    digits = c(rep(1, 5), 4),
+    caption = "Experiment 1 ANOVA"
+  ) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Multilevel model
+
+A multilevel model includes all data and doesn't bin confidence. We fit a model with just a linear effect, and one with an additional quadratic effect.
+
+```{r e1-brm-fit, results="hide"}
+hmc$formula <- curiosity ~ c1 + c2 +
+  (c1 + c2 | subject) + (1 | item)
+hmc$data <- dat1
+hmc$file <- "models/brm-exp1-a"
+fit1.a <- do.call(brm, hmc)
+
+hmc$formula <- curiosity ~ c1 +
+  (c1 | subject) + (1 | item)
+hmc$file <- "models/brm-exp1-b"
+fit1.b <- do.call(brm, hmc)
+```
+
+Model comparison didn't strongly favor either model.
+
+```{r e1-waic}
+waic1 <- waicm(fit1.a, fit1.b)
+waic1$diffs %>% 
+  kbl(digits = 1, caption = "Experiment 1 model comparison") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Model summary
+
+```{r e1-brm-summary}
+describe_posterior(
+  fit1.a,
+  test = "pd", ci = 0.95, 
+  centrality = "mean", dispersion = TRUE,
+  effects = "fixed", diagnostic = NULL
+) %>%
+  as_tibble() %>% 
+  mutate(pd = percent(pd, .1)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Model figure
+
+```{r e1-brm-figure}
+e1_tmp1 <- filter(dat1, accuracy == "Error") %>%
+  distinct(accuracy, subject, c1, c2) %>%
+  add_epred_draws(
+    fit1.a,
+    re_formula = ~ (c1 + c2 | subject)
+  ) %>%
+  mean_qi(.width = .95)
+e1_tmp2 <- filter(dat1, accuracy == "Error") %>%
+  distinct(accuracy, c1, c2) %>%
+  add_epred_draws(fit1.a, re_formula = NA) %>%
+  mean_qi(.width = .95)
+e1_mp1 <- e1_tmp1 %>%
+  ggplot(aes(c1 + 50, .epred, col = accuracy, fill = accuracy)) +
+  scale_color_manual(
+    values = Palette[2], aesthetics = c("color", "fill")
+  ) +
+  scale_x_continuous("Confidence", expand = expansion(.01)) +
+  scale_y_continuous("Curiosity", limits = c(0, 100)) +
+  geom_line(aes(group = subject), size = .33, alpha = 1 / 2) +
+  geom_ribbon(
+    data = e1_tmp2, 
+    aes(ymin = .lower, ymax = .upper),
+    col = NA, alpha = .2
+  ) +
+  geom_line(data = e1_tmp2, size = 1) +
+  theme(
+    aspect.ratio = 1, 
+    legend.title = element_blank()
+  )
+e1_mp1
+
+ggsave("figures/Fig2.png", dpi = 300, width = 8, height = 5)
+ggsave("figures/Fig2.pdf", dpi = 300, width = 8, height = 5)
+```
+
+```{r e1-combo-figure, fig.width = 8, fig.height = 5.2}
+subplot <- function(plot, n = 6) {
+  plot %+%
+    filter(plot$data, subject %in% sample(unique(plot$data$subject), n)) +
+    facet_wrap("subject", nrow = 3) +
+    theme(axis.title.x = element_blank())
+}
+set.seed(999)
+p1 <- subplot(e1_p1, 9)
+p2 <- e1_p2
+p3 <- e1_mp1 + theme(aspect.ratio = 1)
+((p1 / p2) & theme(legend.position = "none") | p3) +
+  plot_layout(widths = c(3.8, 6.2)) +
+  plot_annotation(tag_levels = "A")
+```
+
+## Experiment 2
+
+### Pre-experiment survey
+
+Responses to question "In which scenario would a person be more curious?". 100 people were queried. One person either left the answer empty or quit or had an error.
+
+```{r e2-pre-survey}
+read_csv("data/survey-predictions.csv") %>%
+  count(curiosity) %>%
+  mutate(nn = sum(n), p = percent(n / nn)) %>%
+  kbl(
+    caption = "Responses to 'In which scenario would a person be more curious?'"
+  ) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+```{r e2-process}
+dat2 <- read_excel(
+  "data/CuriosityPaperAllExperimentData.xlsx", 
+  sheet = "Exp2"
+) %>% 
+  clean_names() %>% 
+  transmute(
+    subject = factor(subject),
+    group = factor(group, levels = c("Low", "High")),
+    item = factor(question),
+    accuracy = factor(accuracy, levels = 0:1, labels = c("Error", "Correct")),
+    feedback = factor(condition, levels = c("No feedback", "Feedback")),
+    confidence = as.numeric(confidence),
+    curiosity = as.numeric(curiosity),
+    post_accuracy = as.numeric(post_accuracy)
+  )
+
+# Subject-mean centered confidence if needed
+dat2 <- dat2 %>%
+  group_by(subject) %>%
+  mutate(
+    confidence_c = (confidence - mean(confidence, na.rm = TRUE)),
+  ) %>%
+  ungroup()
+
+# Create polynomial predictors
+dat2 <- dat2 %>%
+  poly_add_columns(confidence, degree = 2, prefix = "c", scale_width = 101)
+
+tabyl(dat2, accuracy) %>% 
+  kbl(caption = "Experiment 2 accuracy") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+dat2 <- drop_na(dat2, accuracy)
+```
+
+### Summary
+
+There were a handful of excluded trials due to incorrect determination of accuracy by program.
+
+```{r e2-exclusions}
+dat2 %>%
+  summarise(
+    subjects = length(unique(subject)),
+    items = length(unique(item)),
+    design = subjects * items,
+    actual = sum(n()),
+    excluded_trials = design - actual
+  ) %>%
+  kbl(caption = "Numbers of trials and participants in Experiment 2.") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+```{r e2-accuracy}
+dat2 %>%
+  group_by(subject) %>%
+  summarise(p_correct = mean(accuracy == "Correct")) %>%
+  summarise(
+    `Mean proportion correct` = mean(p_correct),
+    `SE proportion correct` = sd(p_correct) / sqrt(n())
+  ) %>%
+  kbl(digits = 2, caption = "Summary of performance in Experiment 2.") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Data figure
+
+#### All participants
+
+```{r e2-data-figure, fig.width = 9, fig.height = 9, layout = "l-screen"}
+e2_p1 <- dat2 %>%
+  ggplot(aes(confidence, curiosity, color = accuracy, shape = feedback)) +
+  coord_cartesian(ylim = c(0, 100), xlim = c(0, 100)) +
+  scale_shape_discrete(
+    "Feedback",
+    solid = FALSE
+  ) +
+  scale_color_brewer(
+    "Accuracy",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  scale_x_continuous(
+    "Confidence",
+    breaks = pretty_breaks(3)
+  ) +
+  scale_y_continuous(
+    "Curiosity",
+    breaks = pretty_breaks(3)
+  ) +
+  geom_point(alpha = .8, size = 1.25, stroke = .33) +
+  facet_wrap("subject") +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "right",
+    strip.background = element_blank(),
+    strip.text = element_blank()
+  )
+e2_p1
+```
+
+#### Summary
+
+```{r e2-data-figure-2, fig.cap = "Means and 95%CIs for binned confidence. Empty points are individual participants' mean curiosity at each confidence bin."}
+e2_p2 <- dat2 %>%
+  mutate(confidence = cut(confidence, 3)) %>%
+  group_by(subject, accuracy, feedback, confidence) %>%
+  summarise(curiosity = mean(curiosity, na.rm = TRUE)) %>%
+  ggplot(aes(confidence, curiosity, col = feedback)) +
+  scale_color_brewer(
+    "Feedback",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  coord_cartesian(ylim = c(0, 100)) +
+  scale_x_discrete("Confidence", expand = expansion(.1)) +
+  scale_y_continuous("Curiosity", breaks = pretty_breaks(3)) +
+  geom_quasirandom(
+    width = .05, shape = 1, dodge.width = .3, alpha = 0.5, size = 1
+  ) +
+  stat_summary(
+    fun = mean, geom = "line", aes(group = feedback),
+    position = position_dodge(.3), show.legend = FALSE,
+    size = .25
+  ) +
+  stat_summary(
+    fun.data = mean_cl_boot, position = position_dodge(.3),
+    fatten = 2.5
+  ) +
+  facet_wrap("accuracy")
+e2_p2
+```
+
+### ANOVA
+
+```{r e2-anova}
+dat2_aov <- dat2 %>%
+  drop_na(curiosity) %>% 
+  mutate(conf_bin = cut(confidence, 3)) %>%
+  group_by(subject, accuracy, feedback, conf_bin) %>%
+  summarise(curiosity = mean(curiosity))
+
+fit_aov <- aov_ez(
+  data = dat2_aov,
+  id = "subject",
+  dv = "curiosity",
+  within = c("conf_bin", "accuracy", "feedback")
+)
+anova(fit_aov, intercept = TRUE) %>%
+  kbl(
+    digits = c(rep(1, 5), 4),
+    caption = "Experiment 2 ANOVA"
+  ) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Multilevel model
+
+```{r e2-brm-fit}
+hmc$formula <- curiosity ~ (c1 + c2) * accuracy * feedback +
+  ((c1 + c2) * accuracy * feedback | subject) + 
+  (1 | item)
+hmc$data <- dat2
+hmc$file <- "models/brm-exp2-a"
+fit2.a <- do.call(brm, hmc)
+
+hmc$formula <- curiosity ~ c1 * accuracy * feedback +
+  (c1 * accuracy * feedback | subject) + 
+  (1 | item)
+hmc$file <- "models/brm-exp2-b"
+fit2.b <- do.call(brm, hmc)
+```
+
+Model comparison favored the quadratic model
+
+```{r e2-waic}
+waic2 <- waicm(fit2.a, fit2.b)
+waic2$diffs
+```
+
+Model summary
+
+```{r e2-brm-summary}
+describe_posterior(
+  fit2.a,
+  test = "pd", ci = 0.95, centrality = "mean",
+  effects = "fixed", diagnostic = NULL, dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2, caption = "Experiment 2 model summary") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Intercepts
+
+```{r}
+emm <- emmeans(fit2.a, ~ accuracy + feedback)
+describe_posterior(
+  emm,
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2, caption = "Experiment 2 intercepts") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Linear effect in each cell and differences therein
+
+```{r e2-contrasts-linear}
+# Effect in each cell
+emm <- emtrends(
+  fit2.a,
+  var = "c1", by = c("accuracy", "feedback"),
+  at = list(c1 = 0, c2 = -32.9)
+)
+
+# Interactions
+gather_emmeans_draws(emm) %>%
+  pivot_wider(names_from = accuracy, values_from = .value) %>%
+  mutate(`Error-Correct` = Error - Correct) %>%
+  ungroup() %>%
+  select(feedback, Error, Correct, `Error-Correct`) %>%
+  pivot_longer(Error:`Error-Correct`, names_to = "accuracy") %>%
+  group_by(feedback, accuracy) %>%
+  group_modify(
+    ~ describe_posterior(
+      .$value,
+      test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+    ) %>% 
+      select(-Parameter, -CI)
+  ) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  mutate(across(where(is.numeric), ~round(., 2))) %>% 
+  mutate(
+    String = str_glue("{Mean}, SE = {SD}, 95%CI = [{CI_low}, {CI_high}], pd = {pd}")
+  ) %>%
+  kbl(digits = 2, caption = "Experiment 2 linear trend contrasts") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+
+gather_emmeans_draws(emm) %>%
+  ungroup() %>%
+  filter(accuracy == "Error") %>%
+  pivot_wider(names_from = feedback, values_from = .value) %>%
+  mutate(`Feedback-No feedback` = Feedback - `No feedback`) %>%
+  ungroup() %>%
+  select(accuracy, `No feedback`, Feedback, `Feedback-No feedback`) %>%
+  pivot_longer(`No feedback`:`Feedback-No feedback`, names_to = "feedback") %>%
+  group_by(feedback, accuracy) %>%
+  group_modify(
+    ~ describe_posterior(
+      .$value,
+      test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+    )
+  ) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2, caption = "Experiment 2 linear trend contrasts") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Quadratic effect in each cell and differences therein
+
+```{r e2-contrasts-quadratic}
+# Effect in each cell
+emm <- emtrends(
+  fit2.a,
+  var = "c2", by = c("accuracy", "feedback"),
+  at = list(c1 = 0, c2 = -32.9)
+)
+
+# Interactions
+gather_emmeans_draws(emm) %>%
+  pivot_wider(names_from = accuracy, values_from = .value) %>%
+  mutate(`Error-Correct` = Error - Correct) %>%
+  ungroup() %>%
+  select(feedback, Error, Correct, `Error-Correct`) %>%
+  pivot_longer(Error:`Error-Correct`, names_to = "accuracy") %>%
+  group_by(feedback, accuracy) %>%
+  group_modify(
+    ~ describe_posterior(
+      .$value,
+      test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+    )
+  ) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2, caption = "Experiment 2 quadratic trend contrasts") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+
+gather_emmeans_draws(emm) %>%
+  ungroup() %>%
+  filter(accuracy == "Error") %>%
+  pivot_wider(names_from = feedback, values_from = .value) %>%
+  mutate(.Interaction = `No feedback` - Feedback) %>%
+  ungroup() %>%
+  select(accuracy, `No feedback`, Feedback, .Interaction) %>%
+  pivot_longer(`No feedback`:.Interaction, names_to = "feedback") %>%
+  group_by(feedback, accuracy) %>%
+  group_modify(
+    ~ describe_posterior(
+      .$value,
+      test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+    )
+  ) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Post hoc tests Feedback
+
+```{r e2-post-hoc}
+ats <- distinct(dat2, confidence, c1, c2) %>%
+  arrange(c1) %>% 
+  filter(confidence %in% c(10, 50, 90)) %>% 
+  mutate(across(c1:c2, ~round(.)))
+emm1 <- emmeans(
+  fit2.a,
+  "feedback",
+  by = c("c1", "c2"),
+  at = list(c1 = ats$c1[1], c2 = ats$c2[1], accuracy = "Error")
+)
+emm2 <- emmeans(
+  fit2.a,
+  "feedback",
+  by = c("c1", "c2"),
+  at = list(c1 = ats$c1[2], c2 = ats$c2[2], accuracy = "Error")
+)
+emm3 <- emmeans(
+  fit2.a,
+  "feedback",
+  by = c("c1", "c2"),
+  at = list(c1 = ats$c1[3], c2 = ats$c2[3], accuracy = "Error")
+)
+
+bind_rows(
+  describe_posterior(
+    pairs(emm1, reverse = TRUE),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  ),
+  describe_posterior(
+    pairs(emm2, reverse = TRUE),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  ),
+  describe_posterior(
+    pairs(emm3, reverse = TRUE),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  )
+) %>% 
+  mutate(pd = percent(pd, .1)) %>%
+  mutate(across(where(is.numeric), ~round(., 2))) %>% 
+  mutate(
+    String = str_glue("{Mean}, SE = {SD}, 95%CI = [{CI_low}, {CI_high}], pd = {pd}")
+  ) %>% 
+  kbl(digits = 2, caption = "Experiment 2 contrasts") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Post hoc tests Accuracy
+
+```{r e2-post-hoc-2}
+ats <- distinct(dat2, confidence, c1, c2) %>%
+  arrange(c1) %>% 
+  filter(confidence %in% c(10, 50, 90)) %>% 
+  mutate(across(c1:c2, ~round(.)))
+emm1 <- emmeans(
+  fit2.a,
+  "accuracy",
+  by = c("c1", "c2"),
+  at = list(c1 = ats$c1[1], c2 = ats$c2[1], feedback = "No feedback")
+)
+emm2 <- emmeans(
+  fit2.a,
+  "accuracy",
+  by = c("c1", "c2"),
+  at = list(c1 = ats$c1[2], c2 = ats$c2[2], feedback = "No feedback")
+)
+emm3 <- emmeans(
+  fit2.a,
+  "accuracy",
+  by = c("c1", "c2"),
+  at = list(c1 = ats$c1[3], c2 = ats$c2[3], feedback = "No feedback")
+)
+
+bind_rows(
+  describe_posterior(
+    pairs(emm1),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  ),
+  describe_posterior(
+    pairs(emm2),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  ),
+  describe_posterior(
+    pairs(emm3),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  )
+) %>% 
+  mutate(pd = percent(pd, .1)) %>%
+  mutate(across(where(is.numeric), ~round(., 2))) %>% 
+  mutate(
+    String = str_glue("{Mean}, SE = {SD}, 95%CI = [{CI_low}, {CI_high}], pd = {pd}")
+  ) %>% 
+  kbl(digits = 2, caption = "Experiment 2 contrasts") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Model figure
+
+```{r e2-brm-figure}
+e2_tmp1 <- distinct(
+  dat2, subject, accuracy, feedback, c1, c2
+) %>%
+  add_epred_draws(
+    fit2.a,
+    re_formula = ~ ((c1 + c2) * accuracy * feedback | subject)
+  ) %>%
+  mean_qi(.width = .95) %>%
+  ungroup()
+e2_tmp2 <- distinct(dat2, accuracy, feedback, c1, c2) %>%
+  add_epred_draws(fit2.a, re_formula = NA) %>%
+  mean_qi(.width = .95)
+e2_mp1 <- e2_tmp1 %>%
+  mutate(accuracy = fct_rev(accuracy)) %>%
+  ggplot(aes(c1 + 50, .epred, col = feedback, fill = feedback)) +
+  scale_color_brewer(
+    "Feedback",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  scale_x_continuous("Confidence", expand = expansion(.01)) +
+  scale_y_continuous("Curiosity") +
+  coord_cartesian(ylim = c(0, 100)) +
+  geom_line(
+    aes(group = interaction(subject, feedback)),
+    size = .2, alpha = 1 / 3
+  ) +
+  geom_ribbon(
+    data = e2_tmp2, aes(ymin = .lower, ymax = .upper),
+    col = NA, alpha = .33
+  ) +
+  geom_line(data = e2_tmp2, size = 1) +
+  facet_wrap("accuracy", ncol = 1)
+e2_mp1
+```
+
+```{r e2-combo-figure, fig.width = 8, fig.height = 5.2}
+set.seed(999)
+p1 <- subplot(e2_p1, 9)
+p2 <- e2_p2 + facet_wrap("feedback", ncol = 1)
+p3 <- e2_mp1 + facet_wrap("accuracy", ncol = 1)
+((p1 / p2) & theme(legend.position = "none") | p3) +
+  plot_layout(widths = c(3.8, 6.2)) +
+  plot_annotation(tag_levels = "A")
+```
+
+### Posttest
+
+```{r e2-posttest-1}
+pt2 <- dat2 %>% 
+  filter(feedback == "No feedback", accuracy == "Error")
+pt2 <- pt2 %>%
+  filter(!is.na(post_accuracy)) %>%
+  group_by(subject, group) %>%
+  summarise(
+    n = n(),
+    post_accuracy = mean(post_accuracy, na.rm = TRUE)
+  ) %>%
+  ungroup()
+pt2 %>%
+  ggplot(aes(group, post_accuracy)) +
+  geom_point() +
+  stat_summary(fun.data = mean_cl_boot, col = "blue")
+pt2 %>%
+  group_by(group) %>%
+  summarise(
+    median_n = median(n),
+    post_accuracy_mean = mean(post_accuracy, na.rm = TRUE),
+    post_accuracy_SE = sd(post_accuracy, na.rm = T) / sqrt(n())
+  ) %>%
+  ungroup() %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+t.test(pt2$post_accuracy ~ pt2$group)
+```
+
+## Pilot experiment 2
+
+This one had unbalanced assignment to conditions.
+
+```{r e2b-process}
+dat2b <- read_excel(
+  "data/CuriosityPaperAllExperimentData.xlsx", 
+  sheet = "Exp2_Pilot"
+) %>% 
+  clean_names() %>% 
+  mutate(
+    feedback = ifelse(condition %in% c("YNF", "YNCF"), 1, 0)
+  ) %>%
+  transmute(
+    subject = factor(subject),
+    item = factor(cue),
+    accuracy = factor(accuracy_trivia, levels = 0:1, labels = c("Error", "Correct")),
+    feedback = factor(feedback, levels = 0:1, labels = c("No feedback", "Feedback")),
+    confidence = as.numeric(confidence),
+    curiosity = as.numeric(curiosity)
+  )
+
+# Subject-mean centered confidence if needed
+dat2b <- dat2b %>%
+  group_by(subject) %>%
+  mutate(
+    confidence_c = (confidence - mean(confidence, na.rm = TRUE)),
+  ) %>%
+  ungroup()
+
+# Create polynomial predictors
+dat2b <- dat2b %>%
+  poly_add_columns(confidence, degree = 2, prefix = "c", scale_width = 101)
+
+tabyl(dat2b, accuracy) %>% 
+  kbl() %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+dat2b <- drop_na(dat2b, accuracy)
+```
+
+### Summary
+
+There were a handful of excluded trials due to incorrect determination of accuracy by program.
+
+```{r e2b-exclusions}
+dat2b %>%
+  summarise(
+    subjects = length(unique(subject)),
+    items = length(unique(item)),
+    design = subjects * items,
+    actual = sum(n()),
+    excluded_trials = design - actual
+  ) %>%
+  kbl(digits = 2, caption = "Experiment 2 (pilot) summary") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+```{r e2b-accuracy}
+dat2b %>%
+  group_by(subject) %>%
+  summarise(p_correct = mean(accuracy == "Correct")) %>%
+  summarise(
+    `Mean proportion correct` = mean(p_correct),
+    `SE proportion correct` = sd(p_correct) / sqrt(n())
+  ) %>%
+  kbl(digits = 2, caption = "Experiment 2 (pilot) post-test accuracy") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Data figure
+
+#### All participants
+
+```{r e2b-data-figure, fig.width = 9, fig.height = 9, layout = "l-page",}
+e2b_p1 <- dat2b %>%
+  ggplot(aes(confidence, curiosity, color = accuracy, shape = feedback)) +
+  coord_cartesian(ylim = c(0, 100), xlim = c(0, 100)) +
+  scale_shape_discrete(
+    "Feedback",
+    solid = FALSE
+  ) +
+  scale_color_brewer(
+    "Accuracy",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  scale_x_continuous(
+    "Confidence",
+    breaks = pretty_breaks(3)
+  ) +
+  scale_y_continuous(
+    "Curiosity",
+    breaks = pretty_breaks(3)
+  ) +
+  geom_point(alpha = .8, size = 1.25, stroke = .33) +
+  facet_wrap("subject") +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "right",
+    strip.background = element_blank(),
+    strip.text = element_blank()
+  )
+e2b_p1
+```
+
+#### Summary
+
+```{r e2b-data-figure-2, fig.cap = "Means and 95%CIs for binned confidence. Empty points are individual participants' mean curiosity at each confidence bin."}
+e2b_p2 <- dat2b %>%
+  mutate(confidence = cut(confidence, 3)) %>%
+  group_by(subject, accuracy, feedback, confidence) %>%
+  summarise(curiosity = mean(curiosity, na.rm = TRUE)) %>%
+  ggplot(aes(confidence, curiosity, col = feedback)) +
+  scale_color_brewer(
+    "Feedback",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  coord_cartesian(ylim = c(0, 100)) +
+  scale_x_discrete("Confidence", expand = expansion(.1)) +
+  scale_y_continuous("Curiosity", breaks = pretty_breaks(3)) +
+  geom_quasirandom(
+    width = .05, shape = 1, dodge.width = .3, alpha = 0.5, size = 1
+  ) +
+  stat_summary(
+    fun = mean, geom = "line", aes(group = feedback),
+    position = position_dodge(.3), show.legend = FALSE,
+    size = .25
+  ) +
+  stat_summary(
+    fun.data = mean_cl_boot, position = position_dodge(.3),
+    fatten = 2.5
+  ) +
+  facet_wrap("accuracy")
+e2b_p2
+```
+
+### ANOVA
+
+```{r e2b-anova}
+dat2b_aov <- dat2b %>%
+  drop_na(curiosity) %>% 
+  mutate(conf_bin = cut(confidence, 3)) %>%
+  group_by(subject, accuracy, feedback, conf_bin) %>%
+  summarise(curiosity = mean(curiosity))
+
+fit_aov <- aov_ez(
+  data = dat2b_aov,
+  id = "subject",
+  dv = "curiosity",
+  within = c("conf_bin", "accuracy", "feedback")
+)
+anova(fit_aov, intercept = TRUE) %>%
+  kbl(
+    digits = c(rep(1, 5), 4),
+    caption = "Experiment 2b ANOVA"
+  ) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Multilevel model
+
+```{r e2b-brm-fit}
+hmc$formula <- curiosity ~ (c1 + c2) * accuracy * feedback +
+  ((c1 + c2) * accuracy * feedback | subject) + 
+  (1 | item)
+hmc$data <- dat2b
+hmc$file <- "models/brm-exp2b-a"
+fit2b.a <- do.call(brm, hmc)
+
+hmc$formula <- curiosity ~ c1 * accuracy * feedback +
+  (c1 * accuracy * feedback | subject) + 
+  (1 | item)
+hmc$file <- "models/brm-exp2b-b"
+fit2b.b <- do.call(brm, hmc)
+```
+
+Model comparison favored the quadratic model
+
+```{r e2b-waic}
+waic2b <- waicm(fit2b.a, fit2b.b)
+waic2b$diffs
+```
+
+Model summary
+
+```{r e2b-brm-summary}
+describe_posterior(
+  fit2b.a,
+  test = "pd", ci = 0.95, centrality = "mean",
+  effects = "fixed", diagnostic = NULL, dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Linear effect in each cell and differences therein
+
+```{r e2b-contrasts}
+# Effect in each cell
+emm <- emtrends(
+  fit2b.a,
+  var = "c1", by = c("accuracy", "feedback"),
+  at = list(c1 = 0, c2 = -32.9)
+)
+describe_posterior(
+  emm,
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+# Interactions
+gather_emmeans_draws(emm) %>%
+  pivot_wider(names_from = accuracy, values_from = .value) %>%
+  mutate(`Error-Correct` = Error - Correct) %>%
+  ungroup() %>%
+  select(feedback, Error, Correct, `Error-Correct`) %>%
+  pivot_longer(Error:`Error-Correct`, names_to = "accuracy") %>%
+  group_by(feedback, accuracy) %>%
+  group_modify(
+    ~ describe_posterior(
+      .$value,
+      test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+    )
+  ) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+
+gather_emmeans_draws(emm) %>%
+  ungroup() %>%
+  filter(accuracy == "Error") %>%
+  pivot_wider(names_from = feedback, values_from = .value) %>%
+  mutate(`Feedback-No feedback` = Feedback - `No feedback`) %>%
+  ungroup() %>%
+  select(accuracy, `No feedback`, Feedback, `Feedback-No feedback`) %>%
+  pivot_longer(`No feedback`:`Feedback-No feedback`, names_to = "feedback") %>%
+  group_by(feedback, accuracy) %>%
+  group_modify(
+    ~ describe_posterior(
+      .$value,
+      test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+    )
+  ) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Post hoc test at high confidence
+
+```{r e2b-post-hoc}
+ats <- distinct(dat2b, confidence, c1, c2) %>%
+  filter(confidence == 90)
+emm <- emmeans(
+  fit2b.a,
+  "accuracy",
+  by = c("feedback"),
+  at = list(c1 = ats$c1, c2 = ats$c2)
+)
+describe_posterior(
+  pairs(emm),
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Model figure
+
+```{r e2b-brm-figure}
+e2b_tmp1 <- distinct(
+  dat2b, subject, accuracy, feedback, c1, c2
+) %>%
+  add_epred_draws(
+    fit2b.a,
+    re_formula = ~ ((c1 + c2) * accuracy * feedback | subject)
+  ) %>%
+  mean_qi(.width = .95) %>%
+  ungroup()
+e2b_tmp2 <- distinct(dat2b, accuracy, feedback, c1, c2) %>%
+  add_epred_draws(fit2b.a, re_formula = NA) %>%
+  mean_qi(.width = .95)
+e2b_mp1 <- e2b_tmp1 %>%
+  mutate(accuracy = fct_rev(accuracy)) %>%
+  ggplot(aes(c1 + 50, .epred, col = feedback, fill = feedback)) +
+  scale_color_brewer(
+    "Feedback",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  scale_x_continuous("Confidence", expand = expansion(.01)) +
+  scale_y_continuous("Curiosity") +
+  coord_cartesian(ylim = c(0, 100)) +
+  geom_line(
+    aes(group = interaction(subject, accuracy, feedback)),
+    size = .2, alpha = 1 / 3
+  ) +
+  geom_ribbon(
+    data = e2b_tmp2, aes(ymin = .lower, ymax = .upper),
+    col = NA, alpha = .33
+  ) +
+  geom_line(data = e2b_tmp2, size = 1) +
+  facet_wrap("accuracy", ncol = 1)
+e2b_mp1
+```
+
+### Figure E2 & Pilot
+
+```{r}
+e2.tmp1 <- bind_rows(
+  `Experiment 2` = e2_tmp1,
+  Pilot = e2b_tmp1,
+  .id = "experiment"
+) %>% 
+  mutate(accuracy = fct_rev(accuracy)) %>% 
+  mutate(
+    color = interaction(feedback, accuracy),
+    color = factor(
+      color, 
+      levels = c(
+        "Feedback.Correct", "No feedback.Correct", 
+        "Feedback.Error", "No feedback.Error"
+      ),
+      labels = c(
+        "Yes/No Feedback Correct", "No Feedback Correct", 
+        "Yes/No Feedback Error", "No Feedback Error"
+      )
+    )
+  )
+
+distinct(e2.tmp1, feedback, accuracy, color)
+
+e2.tmp2 <- bind_rows(
+  `Experiment 2` = e2_tmp2,
+  Pilot = e2b_tmp2,
+  .id = "experiment"
+) %>% 
+  mutate(accuracy = fct_rev(accuracy)) %>% 
+  mutate(
+    color = interaction(feedback, accuracy),
+    color = factor(
+      color, 
+      levels = c(
+        "Feedback.Correct", "No feedback.Correct", 
+        "Feedback.Error", "No feedback.Error"
+      ),
+      labels = c(
+        "Yes/No Feedback Correct", "No Feedback Correct", 
+        "Yes/No Feedback Error", "No Feedback Error"
+      )
+    )
+  )
+
+e2.tmp1 %>% 
+  ggplot(
+    aes(c1 + 50, .epred, color = color, fill = color)
+  ) +
+  scale_color_manual(
+    values = Palette[c(1,3,2,4)],
+    aesthetics = c("color", "fill")
+  ) +
+  scale_x_continuous("Confidence", expand = expansion(.01)) +
+  scale_y_continuous("Curiosity") +
+  coord_cartesian(ylim = c(0, 100)) +
+  geom_line(
+    aes(group = interaction(subject, color)),
+    size = .2, alpha = 1 / 3
+  ) +
+  geom_ribbon(
+    data = e2.tmp2, 
+    aes(ymin = .lower, ymax = .upper),
+    col = NA, alpha = .33
+  ) +
+  geom_line(data = e2.tmp2, size = 1) +
+  facet_grid(accuracy~experiment) +
+  theme(
+    legend.title = element_blank(),
+    panel.spacing.x = unit(12, "pt"),
+    strip.background.y = element_blank(),
+    strip.background.x = element_rect(fill = "white"),
+    strip.text.x = element_text(color = "black"),
+    aspect.ratio = 1
+  )
+
+ggsave("figures/Fig3.png", dpi = 300, width = 9, height = 6)
+ggsave("figures/Fig3.pdf", dpi = 300, width = 9, height = 6)
+```
+
+```{r}
+e2.tmp1 <- filter(e2.tmp1, feedback == "No feedback")
+e2.tmp2 <- filter(e2.tmp2, feedback == "No feedback")
+
+e2.tmp1 %>% 
+  ggplot(
+    aes(c1 + 50, .epred, color = accuracy, fill = accuracy)
+  ) +
+  scale_color_manual(
+    values = Palette[3:4],
+    aesthetics = c("color", "fill")
+  ) +
+  scale_x_continuous("Confidence", expand = expansion(.01)) +
+  scale_y_continuous("Curiosity") +
+  coord_cartesian(ylim = c(0, 100)) +
+  geom_line(
+    aes(group = interaction(subject, accuracy)),
+    size = .2, alpha = 1 / 3
+  ) +
+  geom_ribbon(
+    data = e2.tmp2, 
+    aes(ymin = .lower, ymax = .upper),
+    col = NA, alpha = .33
+  ) +
+  geom_line(data = e2.tmp2, size = 1) +
+  facet_wrap(~experiment, nrow = 1) +
+  theme(
+    legend.title = element_blank(),
+    panel.spacing.x = unit(12, "pt"),
+    strip.background.x = element_rect(fill = "white"),
+    strip.text.x = element_text(color = "black"),
+    aspect.ratio = 1
+  )
+
+ggsave("figures/Fig4.png", dpi = 300, width = 9, height = 3.5)
+ggsave("figures/Fig4.pdf", dpi = 300, width = 9, height = 3.5)
+```
+
+```{r include = FALSE}
+# Clear workspace
+rm(
+  fit1.a, fit1.b, fit2.a, fit2.b, fit2b.a, fit2b.b,
+  emm, emm1, emm2, emm3,
+  e1_tmp1, e1_tmp2, e2_tmp1, e2_tmp2, e2b_tmp1, e2b_tmp2, e2.tmp1, e2.tmp2
+)
+```
+
+## Experiment 3
+
+Surprise is 100-surprised_wrong_rating_response. There were seven trials where accuracy was missing.
+
+```{r e3-data-read}
+dat3 <- read_excel(
+  "data/CuriosityPaperAllExperimentData.xlsx", 
+  sheet = "Exp3"
+) %>% 
+  clean_names() %>% 
+  transmute(
+    subject = factor(participant_public_id),
+    accuracy = factor(lenient_correct, levels = 0:1, labels = c("Error", "Correct")),
+    confidence = as.numeric(confidence_rating_response),
+    uncertainty = as.numeric(uncertaintly100_surprise),
+    item = factor(qnum)
+  )
+
+# Subject-mean centered confidence if needed
+dat3 <- dat3 %>%
+  group_by(subject) %>%
+  mutate(
+    confidence_c = (confidence - mean(confidence, na.rm = TRUE)),
+  ) %>%
+  ungroup()
+
+# Create polynomial predictors
+dat3 <- dat3 %>%
+  poly_add_columns(confidence, degree = 2, prefix = "c", scale_width = 101)
+
+tabyl(dat3, accuracy) %>% 
+  kbl() %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+dat3 <- drop_na(dat3, accuracy)
+```
+
+### Summary
+
+Summary of accuracy
+
+```{r e3-accuracy}
+dat3 %>%
+  group_by(subject) %>%
+  summarise(accuracy = mean(accuracy == "Correct", na.rm = TRUE)) %>%
+  summarise(m_accuracy = mean(accuracy), sd_accuracy = sd(accuracy)) %>%
+  kbl(digits = 2, caption = "Experiment 3 accuracy") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Gamma correlation confidence - accuracy
+
+```{r e3-gamma}
+dat3 %>%
+  mutate(accuracy = as.numeric(accuracy)-1) %>% 
+  group_by(subject) %>%
+  summarise(
+    resolution = GKgamma(table(accuracy, confidence))$gamma
+  ) %>%
+  summarise(m_resolution = mean(resolution), sd_resolution = sd(resolution)) %>%
+  kbl(digits = 2, caption = "Experiment 3 resolution") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Data figure
+
+#### All participants
+
+```{r e3-data-figure, fig.width = 9, fig.height = 9, layout = "l-page"}
+e3_p1 <- dat3 %>%
+  ggplot(aes(confidence, uncertainty, color = accuracy)) +
+  coord_cartesian(ylim = c(0, 100), xlim = c(0, 100)) +
+  scale_color_brewer(
+    "Accuracy",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  scale_x_continuous(
+    "Confidence",
+    breaks = pretty_breaks(3)
+  ) +
+  scale_y_continuous(
+    "Subjective uncertainty",
+    breaks = pretty_breaks(3)
+  ) +
+  geom_point(shape = 1) +
+  facet_wrap("subject") +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "right",
+    strip.background = element_blank(),
+    strip.text = element_blank()
+  )
+e3_p1
+```
+
+#### Summary
+
+```{r e3-data-figure-2, fig.cap = "Means and 95%CIs for binned confidence. Empty points are individual participants' mean curiosity at each confidence bin."}
+e3_p2 <- dat3 %>%
+  mutate(confidence = cut(confidence, 3)) %>%
+  group_by(subject, accuracy, confidence) %>%
+  summarise(uncertainty = mean(uncertainty, na.rm = TRUE)) %>%
+  ggplot(aes(confidence, uncertainty, col = accuracy)) +
+  scale_color_brewer(
+    "Accuracy",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  coord_cartesian(ylim = c(0, 100)) +
+  scale_x_discrete("Confidence", expand = expansion(.1)) +
+  scale_y_continuous("Subjective uncertainty", breaks = pretty_breaks(3)) +
+  geom_quasirandom(
+    width = .05, shape = 1, dodge.width = .3, alpha = 0.5, size = 1
+  ) +
+  stat_summary(
+    fun = mean, geom = "line", aes(group = accuracy),
+    position = position_dodge(.3), show.legend = FALSE,
+    size = .25
+  ) +
+  stat_summary(
+    fun.data = mean_cl_boot, position = position_dodge(.3),
+    fatten = 2.5
+  ) +
+  theme(aspect.ratio = 1)
+e3_p2
+```
+
+### ANOVA
+
+Three bins
+
+```{r e3-anova}
+dat3_aov <- dat3 %>%
+  drop_na(uncertainty) %>% 
+  mutate(conf_bin = cut(confidence, 3)) %>%
+  group_by(subject, accuracy, conf_bin) %>%
+  summarise(uncertainty = mean(uncertainty, na.rm = TRUE))
+
+fit_aov <- aov_ez(
+  data = dat3_aov,
+  id = "subject",
+  dv = "uncertainty",
+  within = c("conf_bin", "accuracy")
+)
+anova(fit_aov, intercept = TRUE) %>%
+  kbl(
+    digits = c(rep(1, 5), 4),
+    caption = "Experiment 3 ANOVA"
+  ) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Multilevel model
+
+```{r e3-brm-fit}
+hmc$formula <- uncertainty ~ (c1 + c2) * accuracy +
+  ((c1 + c2) * accuracy | subject) + 
+  (1 | item)
+hmc$data <- dat3
+hmc$file <- "models/brm-exp3-a"
+fit3.a <- do.call(brm, hmc)
+
+hmc$formula <- uncertainty ~ c1 * accuracy +
+  (c1 * accuracy | subject) + 
+  (1 | item)
+hmc$file <- "models/brm-exp3-b"
+fit3.b <- do.call(brm, hmc)
+```
+
+Model comparison favored the quadratic model
+
+```{r e3-waic}
+waic3 <- waicm(fit3.a, fit3.b)
+waic3$diffs
+```
+
+Model summary
+
+```{r e3-brm-summary}
+describe_posterior(
+  fit3.a,
+  test = "pd", ci = 0.95, centrality = "mean",
+  effects = "fixed", diagnostic = NULL, dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Linear effect in each cell and differences therein
+
+```{r e3-contrasts-linear}
+# Effect in each cell
+emm <- emtrends(
+  fit3.a,
+  var = "c1", by = c("accuracy"),
+  at = list(c1 = 0, c2 = -32.9)
+)
+describe_posterior(
+  emm,
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  bind_rows(
+    describe_posterior(
+      pairs(emm),
+      test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+    )
+  ) %>% 
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Quadratic effect in each cell and differences therein
+
+```{r e3-contrasts-quadratic}
+# Effect in each cell
+emm <- emtrends(
+  fit3.a,
+  var = "c2", by = c("accuracy"),
+  at = list(c1 = 0, c2 = -32.9)
+)
+describe_posterior(
+  emm,
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  bind_rows(
+    describe_posterior(
+      pairs(emm),
+      test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+    )
+  ) %>% 
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Post hoc test at high confidence
+
+```{r e3-post-hoc}
+ats <- distinct(dat3, confidence, c1, c2) %>%
+  filter(confidence == 90)
+emm <- emmeans(
+  fit3.a,
+  "accuracy",
+  by = c("c1", "c2"),
+  at = list(c1 = ats$c1, c2 = ats$c2)
+)
+describe_posterior(
+  pairs(emm),
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  mutate(Parameter = str_sub(Parameter, 1, 15)) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Model figure
+
+```{r e3-brm-figure}
+e3_tmp1 <- distinct(
+  dat3, subject, accuracy, c1, c2
+) %>%
+  add_epred_draws(
+    fit3.a,
+    re_formula = ~ ((c1 + c2) * accuracy | subject)
+  ) %>%
+  mean_qi(.width = .95) %>%
+  ungroup()
+e3_tmp2 <- distinct(
+  dat3, accuracy, c1, c2
+) %>%
+  add_epred_draws(fit3.a, re_formula = NA) %>%
+  mean_qi(.width = .95) %>% 
+  mutate(accuracy = fct_rev(accuracy))
+e3_mp1 <- e3_tmp1 %>%
+  mutate(accuracy = fct_rev(accuracy)) %>% 
+  ggplot(aes(c1 + 50, .epred, col = accuracy, fill = accuracy)) +
+  scale_color_manual(
+    values = Palette[3:4], aesthetics = c("color", "fill")
+  ) +
+  scale_x_continuous("Confidence", expand = expansion(.01)) +
+  scale_y_continuous("Subjective Uncertainty") +
+  coord_cartesian(ylim = c(0, 100)) +
+  geom_line(
+    aes(group = interaction(subject, accuracy)),
+    size = .2, alpha = 1 / 3
+  ) +
+  geom_ribbon(
+    data = e3_tmp2, aes(ymin = .lower, ymax = .upper),
+    col = NA, alpha = .33
+  ) +
+  geom_line(data = e3_tmp2, size = 1) +
+  theme(
+    legend.title = element_blank(),
+    aspect.ratio = 1
+  )
+e3_mp1
+
+ggsave("figures/Fig5.png", dpi = 300, width = 9, height = 3.5)
+ggsave("figures/Fig5.pdf", dpi = 300, width = 9, height = 3.5)
+```
+
+```{r e3-combo-figure, fig.width = 8, fig.height = 5.2}
+set.seed(999)
+p1 <- subplot(e3_p1, 9)
+p2 <- e3_p2
+p3 <- e3_mp1 + theme(aspect.ratio = 1)
+((p1 / p2) & theme(legend.position = "none") | p3) +
+  plot_layout(widths = c(3.8, 6.2)) +
+  plot_annotation(tag_levels = "A")
+```
+
+## Experiment 4
+
+```{r e4-data-load}
+dat4 <- read_excel(
+  "data/CuriosityPaperAllExperimentData.xlsx", 
+  sheet = "Exp4"
+) %>% 
+  clean_names() %>% 
+  transmute(
+    subject = factor(participant_public_id),
+    group = factor(
+      group1curious2surprise, 
+      levels = c(2, 1), 
+      labels = c("Uncertainty", "Curiosity")
+    ),
+    accuracy = factor(
+      lenient_correct, 
+      levels = 0:1, 
+      labels = c("Error", "Correct")
+    ),
+    confidence = as.numeric(confidence),
+    rating = as.numeric(curiosity_or_surprised_rating),
+    item = factor(question)
+  ) %>% 
+  mutate(rating = if_else(group=="Uncertainty", 100-rating, rating))
+
+# Subject-mean centered confidence if needed
+dat4 <- dat4 %>%
+  group_by(subject) %>%
+  mutate(
+    confidence_c = (confidence - mean(confidence, na.rm = TRUE)),
+  ) %>%
+  ungroup()
+
+# Create polynomial predictors
+dat4 <- dat4 %>%
+  poly_add_columns(confidence, degree = 2, prefix = "c", scale_width = 101)
+
+tabyl(dat4, accuracy) %>% 
+  kbl() %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+dat4 <- drop_na(dat4, accuracy)
+```
+
+### Summary
+
+Allocation
+
+```{r}
+dat4 %>% 
+  count(group, subject) %>% 
+  count(group)
+```
+
+Summary of accuracy
+
+```{r e4-accuracy}
+dat4 %>%
+  group_by(subject) %>%
+  summarise(
+    accuracy = mean(accuracy == "Correct", na.rm = TRUE),
+    confidence = mean(confidence, na.rm = TRUE)
+  ) %>%
+  summarise(
+    m_accuracy = mean(accuracy), sd_accuracy = sd(accuracy),
+    m_confidence = mean(confidence), sd_confidence = sd(confidence)
+  ) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Gamma correlation confidence - accuracy
+
+```{r e4-gamma}
+dat4 %>%
+  group_by(subject) %>%
+  summarise(
+    resolution = GKgamma(table(accuracy, confidence))$gamma
+  ) %>%
+  summarise(m_resolution = mean(resolution), sd_resolution = sd(resolution)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Data figure
+
+#### All participants
+
+```{r e4-data-figure, fig.width = 9, fig.height = 9, layout = "l-page",}
+e4_p1 <- dat4 %>%
+  ggplot(aes(confidence, rating, color = accuracy, shape = group)) +
+  scale_shape_discrete(
+    "Group",
+    solid = FALSE
+  ) +
+  scale_color_brewer(
+    "Accuracy",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  coord_cartesian(ylim = c(0, 100), xlim = c(0, 100)) +
+  scale_x_continuous(
+    "Confidence",
+    breaks = pretty_breaks(3)
+  ) +
+  scale_y_continuous(
+    "Response",
+    breaks = pretty_breaks(3)
+  ) +
+  geom_point() +
+  facet_wrap("subject") +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "right",
+    strip.background = element_blank(),
+    strip.text = element_blank()
+  )
+e4_p1
+```
+
+#### Summary
+
+```{r e4-data-figure-2, fig.cap = "Means and 95%CIs for binned confidence. Empty points are individual participants' mean curiosity at each confidence bin."}
+e4_p2 <- dat4 %>%
+  mutate(confidence = cut(confidence, 3)) %>%
+  group_by(group, subject, accuracy, confidence) %>%
+  summarise(rating = mean(rating, na.rm = TRUE)) %>%
+  ggplot(aes(confidence, rating, col = accuracy)) +
+  scale_color_brewer(
+    "Accuracy",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  scale_x_discrete("Confidence", expand = expansion(.1)) +
+  scale_y_continuous("Subjective uncertainty", breaks = pretty_breaks()) +
+  geom_quasirandom(
+    width = .05, shape = 1, dodge.width = .3, alpha = 0.5, size = 1
+  ) +
+  stat_summary(
+    fun = mean, geom = "line", aes(group = accuracy),
+    position = position_dodge(.3), show.legend = FALSE,
+    size = .25
+  ) +
+  stat_summary(
+    fun.data = mean_cl_boot, position = position_dodge(.3),
+    fatten = 2.5
+  ) +
+  facet_wrap("group") +
+  theme(aspect.ratio = 1)
+e4_p2
+```
+
+### ANOVA
+
+Three bins
+
+```{r e4-anova}
+dat4_aov <- dat4 %>%
+  drop_na(rating) %>% 
+  mutate(conf_bin = cut(confidence, 3)) %>%
+  group_by(group, subject, accuracy, conf_bin) %>%
+  summarise(rating = mean(rating))
+
+fit_aov <- aov_ez(
+  data = dat4_aov,
+  id = "subject",
+  dv = "rating",
+  between = "group",
+  within = c("conf_bin", "accuracy")
+)
+anova(fit_aov, intercept = TRUE) %>%
+  kbl(
+    digits = c(rep(1, 5), 4),
+    caption = "Experiment 4 ANOVA"
+  ) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Multilevel model
+
+```{r e4-brm-fit}
+hmc$formula <- rating ~ (c1 + c2) * accuracy * group +
+  ((c1 + c2) * accuracy | subject) + 
+  (1 | item)
+hmc$data <- dat4
+hmc$file <- "models/brm-exp4-a"
+fit4.a <- do.call(brm, hmc)
+
+hmc$formula <- rating ~ c1 * accuracy * group +
+  (c1 * accuracy | subject) + 
+  (1 | item)
+hmc$file <- "models/brm-exp4-b"
+fit4.b <- do.call(brm, hmc)
+```
+
+Model comparison favored the quadratic model
+
+```{r e4-waic}
+waic4 <- waicm(fit4.a, fit4.b)
+waic4$diffs
+```
+
+Model summary
+
+```{r e4-brm-summary}
+describe_posterior(
+  fit4.a,
+  test = "pd", ci = 0.95, centrality = "mean",
+  effects = "fixed", diagnostic = NULL, dispersion = TRUE
+) %>%
+  as_tibble() %>% 
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Trends averaging over accuracy
+
+```{r}
+emm <- emtrends(
+  fit4.a,
+  var = "c1", by = c("group"),
+  at = list(c1 = 0, c2 = -32.9, accuracy = NA)
+)
+
+bind_rows(
+  describe_posterior(
+    emm,
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  ),
+  describe_posterior(
+    pairs(emm),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  )
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+
+emm <- emtrends(
+  fit4.a,
+  var = "c2", by = c("group"),
+  at = list(c1 = 0, c2 = -32.9, accuracy = NA)
+)
+bind_rows(
+  describe_posterior(
+    emm,
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  ),
+  describe_posterior(
+    pairs(emm),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  )
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+
+Linear effect in each cell and differences therein
+
+```{r e4-contrasts}
+# Effect in each cell
+emm <- emtrends(
+  fit4.a,
+  var = "c1", by = c("accuracy", "group"),
+  at = list(c1 = 0, c2 = -32.9)
+)
+
+gather_emmeans_draws(emm) %>%
+  pivot_wider(names_from = accuracy, values_from = .value) %>%
+  mutate(`Error-Correct` = Error - Correct) %>%
+  ungroup() %>%
+  select(group, Error, Correct, `Error-Correct`) %>%
+  pivot_longer(Error:`Error-Correct`, names_to = "accuracy") %>%
+  group_by(group, accuracy) %>%
+  group_modify(
+    ~ describe_posterior(
+      .$value,
+      test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+    )
+  ) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2, caption = "Experiment 4 linear trends") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Quadratic effect in each cell and differences therein
+
+```{r e4-contrasts-q}
+# Effect in each cell
+emm <- emtrends(
+  fit4.a,
+  var = "c2", by = c("accuracy", "group"),
+  at = list(c1 = 0, c2 = -32.9)
+)
+
+# Interactions
+gather_emmeans_draws(emm) %>%
+  pivot_wider(names_from = accuracy, values_from = .value) %>%
+  mutate(`Error-Correct` = Error - Correct) %>%
+  ungroup() %>%
+  select(group, Error, Correct, `Error-Correct`) %>%
+  pivot_longer(Error:`Error-Correct`, names_to = "accuracy") %>%
+  group_by(group, accuracy) %>%
+  group_modify(
+    ~ describe_posterior(
+      .$value,
+      test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+    )
+  ) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2, caption = "Experiment 4 quadratic trends") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Post hoc test at high confidence
+
+```{r e4-post-hoc}
+ats <- distinct(dat4, confidence, c1, c2) %>%
+  filter(confidence == 90)
+emm <- emmeans(
+  fit4.a,
+  "accuracy",
+  by = c("group", "c1", "c2"),
+  at = list(c1 = ats$c1, c2 = ats$c2)
+)
+describe_posterior(
+  pairs(emm),
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  mutate(Parameter = str_sub(Parameter, 1, 28)) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Model figure
+
+```{r e4-brm-figure}
+e4_tmp1 <- distinct(
+  dat4, group, subject, accuracy, c1, c2
+) %>%
+  add_epred_draws(
+    fit4.a,
+    re_formula = ~ ((c1 + c2) * accuracy | subject)
+  ) %>%
+  mean_qi(.width = .95)
+e4_tmp2 <- distinct(
+  dat4, group, accuracy, c1, c2
+) %>%
+  add_epred_draws(fit4.a, re_formula = NA) %>%
+  mean_qi(.width = .95) %>% 
+  mutate(
+    panel = factor(
+      group, 
+      levels = c("Uncertainty", "Curiosity"), 
+      labels = c(
+        "Subjective Uncertainty", 
+        "Curiosity"
+      )
+    )
+  ) %>% 
+  mutate(accuracy = fct_rev(accuracy))
+e4_mp1 <- e4_tmp1 %>%
+  mutate(accuracy = fct_rev(accuracy)) %>% 
+  mutate(
+    panel = factor(
+      group, 
+      levels = c("Uncertainty", "Curiosity"), 
+      labels = c(
+        "Subjective Uncertainty", 
+        "Curiosity"
+      )
+    )
+  ) %>% 
+  ggplot(aes(c1 + 50, .epred, col = accuracy, fill = accuracy)) +
+  scale_color_manual(
+    values = Palette[3:4], aesthetics = c("color", "fill")
+  ) +
+  scale_x_continuous("Confidence", expand = expansion(.01)) +
+  scale_y_continuous("Response") +
+  coord_cartesian(ylim = c(0, 100)) +
+  geom_line(
+    aes(group = interaction(subject, accuracy)),
+    size = .2, alpha = 1 / 3
+  ) +
+  geom_ribbon(
+    data = e4_tmp2, aes(ymin = .lower, ymax = .upper),
+    col = NA, alpha = .25
+  ) +
+  geom_line(data = e4_tmp2, size = 1) +
+  facet_wrap2(
+    "panel", ncol = 2,
+    strip.position = "left",
+    axes = "all"
+  ) +
+  theme(
+    aspect.ratio = 1,
+    axis.title.y = element_blank(),
+    legend.title = element_blank(),
+    strip.background = element_blank(),
+    strip.text.y = element_text(color = "black", size = 13),
+    strip.placement = "outside"
+  )
+e4_mp1
+ggsave("figures/Fig6.png", dpi = 300, width = 9, height = 3.5)
+ggsave("figures/Fig6.pdf", dpi = 300, width = 9, height = 3.5)
+```
+
+```{r e4-combo-figure, fig.width = 8, fig.height = 5.2}
+set.seed(999)
+p1 <- subplot(e4_p1, 9)
+p2 <- e4_p2
+p3 <- e4_mp1
+((p1 / p2) & theme(legend.position = "none") | p3) +
+  plot_layout(widths = c(3.8, 6.2)) +
+  plot_annotation(tag_levels = "A")
+```
+
+## Control experiment
+
+```{r}
+datc <- read_excel(
+  "data/CuriosityPaperAllExperimentData.xlsx", 
+  sheet = "control"
+) %>% 
+  clean_names() %>% 
+  transmute(
+    subject = factor(participant_public_id),
+    accuracy = factor(
+      lenient_correct, 
+      levels = 0:1, 
+      labels = c("Error", "Correct")
+    ),
+    confidence = as.numeric(confidence),
+    curiosity = as.numeric(curious),
+    item = factor(question)
+  )
+
+# Create polynomial predictors
+datc <- datc %>%
+  poly_add_columns(confidence, degree = 2, prefix = "c", scale_width = 101)
+
+tabyl(datc, accuracy) %>% 
+  kbl() %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+datc <- drop_na(datc, accuracy)
+```
+
+### Summary
+
+Summary of accuracy
+
+```{r ec-accuracy}
+datc %>%
+  group_by(subject) %>%
+  summarise(
+    accuracy = mean(accuracy == "Correct", na.rm = TRUE),
+    confidence = mean(confidence / 100, na.rm = TRUE)
+  ) %>%
+  summarise(
+    m_accuracy = mean(accuracy), sd_accuracy = sd(accuracy),
+    m_confidence = mean(confidence), sd_confidence = sd(confidence)
+  ) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Gamma correlation confidence - accuracy
+
+```{r ec-gamma}
+datc %>%
+  group_by(subject) %>%
+  summarise(
+    resolution = GKgamma(table(accuracy, confidence))$gamma
+  ) %>%
+  summarise(m_resolution = mean(resolution), sd_resolution = sd(resolution)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Data figures
+
+#### All participants
+
+```{r ec-data-figure, fig.width = 9, fig.height = 9, layout = "l-page",}
+ec_p1 <- datc %>%
+  ggplot(aes(confidence, curiosity, color = accuracy)) +
+  scale_color_brewer(
+    "Accuracy",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  coord_cartesian(ylim = c(0, 100), xlim = c(0, 100)) +
+  scale_x_continuous(
+    "Confidence",
+    breaks = pretty_breaks(3)
+  ) +
+  scale_y_continuous(
+    "Response",
+    breaks = pretty_breaks(3)
+  ) +
+  geom_point(shape = 1, stroke = 0.3) +
+  facet_wrap("subject") +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "right",
+    strip.background = element_blank(),
+    strip.text = element_blank()
+  )
+ec_p1
+```
+
+#### Summary
+
+```{r ec-data-figure-2, fig.cap = "Means and 95%CIs for binned confidence. Empty points are individual participants' mean curiosity at each confidence bin."}
+ec_p2 <- datc %>%
+  mutate(confidence = cut(confidence, 3)) %>%
+  group_by(subject, accuracy, confidence) %>%
+  summarise(curiosity = mean(curiosity, na.rm = TRUE)) %>%
+  ggplot(aes(confidence, curiosity, col = accuracy)) +
+  scale_color_brewer(
+    "Accuracy",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  coord_cartesian(ylim = c(0, 100)) +
+  scale_x_discrete("Confidence", expand = expansion(.1)) +
+  scale_y_continuous("Curiosity", breaks = pretty_breaks(3)) +
+  geom_quasirandom(
+    width = .05, shape = 1, dodge.width = .3, alpha = 0.5, size = 1
+  ) +
+  stat_summary(
+    fun = mean, geom = "line", aes(group = accuracy),
+    position = position_dodge(.3), show.legend = FALSE,
+    size = .25
+  ) +
+  stat_summary(
+    fun.data = mean_cl_boot, position = position_dodge(.3),
+    fatten = 2.5
+  )
+ec_p2
+```
+
+### ANOVA
+
+```{r ec-anova}
+datc_aov <- datc %>%
+  drop_na(curiosity) %>% 
+  mutate(conf_bin = cut(confidence, 3)) %>%
+  group_by(subject, accuracy, conf_bin) %>%
+  summarise(curiosity = mean(curiosity))
+
+fit_aov <- aov_ez(
+  data = datc_aov,
+  id = "subject",
+  dv = "curiosity",
+  within = c("conf_bin", "accuracy")
+)
+anova(fit_aov, intercept = TRUE) %>%
+  kbl(
+    digits = c(rep(1, 5), 4),
+    caption = "Control experiment ANOVA"
+  ) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Multilevel model
+
+```{r ec-brm-fit}
+hmc$formula <- curiosity ~ (c1 + c2) * accuracy +
+  ((c1 + c2) * accuracy | subject) + 
+  (1 | item)
+hmc$data <- datc
+hmc$file <- "models/brm-expc-a"
+fitc.a <- do.call(brm, hmc)
+
+hmc$formula <- curiosity ~ c1 * accuracy +
+  (c1 * accuracy | subject) + 
+  (1 | item)
+hmc$file <- "models/brm-expc-b"
+fitc.b <- do.call(brm, hmc)
+```
+
+Model comparison favored the quadratic model
+
+```{r ec-waic}
+waicc <- waicm(fitc.a, fitc.b)
+waicc$diffs
+```
+
+Model summary
+
+```{r ec-brm-summary}
+describe_posterior(
+  fitc.a,
+  test = "pd", ci = 0.95, centrality = "mean",
+  effects = "fixed", diagnostic = NULL, dispersion = TRUE
+) %>%
+  as_tibble() %>% 
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Intercepts
+
+```{r}
+emm <- emmeans(fitc.a, ~ accuracy)
+describe_posterior(
+  emm,
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Linear effect in each cell and differences therein
+
+```{r ec-contrasts-linear}
+# Effect in each cell
+emm <- emtrends(
+  fitc.a,
+  var = "c1", by = c("accuracy"),
+  at = list(confidence1 = 0, c2 = -32.9)
+)
+describe_posterior(
+  emm,
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  bind_rows(
+    describe_posterior(
+      pairs(emm),
+      test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+    )  
+  ) %>% 
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Quadratic effect in each cell and differences therein
+
+```{r ec-contrasts-quadratic}
+# Effect in each cell
+emm <- emtrends(
+  fitc.a,
+  var = "c2", by = c("accuracy"),
+  at = list(confidence1 = 0, c2 = -32.9)
+)
+describe_posterior(
+  emm,
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  bind_rows(
+    describe_posterior(
+      pairs(emm),
+      test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+    )  
+  ) %>% 
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Post hoc test at high confidence
+
+```{r ec-post-hoc}
+ats <- distinct(datc, confidence, c1, c2) %>%
+  filter(confidence == 90)
+emm <- emmeans(
+  fitc.a,
+  "accuracy",
+  by = c("c1", "c2"),
+  at = list(c1 = ats$c1, c2 = ats$c2)
+)
+describe_posterior(
+  pairs(emm),
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  mutate(Parameter = str_sub(Parameter, 1, 15)) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Model figure
+
+```{r ec-brm-figure}
+ec_tmp1 <- distinct(
+  datc, subject, accuracy, c1, c2
+) %>%
+  add_epred_draws(
+    fitc.a,
+    re_formula = ~ ((c1 + c2) * accuracy | subject)
+  ) %>%
+  mean_qi(.width = .95) %>%
+  ungroup()
+ec_tmp2 <- distinct(
+  datc, accuracy, c1, c2
+) %>%
+  add_epred_draws(fitc.a, re_formula = NA) %>%
+  mean_qi(.width = .95) %>% 
+  mutate(accuracy = fct_rev(accuracy))
+ec_mp1 <- ec_tmp1 %>%
+  mutate(accuracy = fct_rev(accuracy)) %>% 
+  ggplot(aes(c1 + 50, .epred, col = accuracy, fill = accuracy)) +
+  scale_color_manual(
+    values = Palette[3:4], aesthetics = c("color", "fill")
+  ) +
+  scale_x_continuous("Confidence", expand = expansion(.01)) +
+  scale_y_continuous("Curiosity") +
+  coord_cartesian(ylim = c(0, 100)) +
+  geom_line(
+    aes(group = interaction(subject, accuracy)),
+    size = .2, alpha = 1 / 3
+  ) +
+  geom_ribbon(
+    data = ec_tmp2, aes(ymin = .lower, ymax = .upper),
+    col = NA, alpha = .33
+  ) +
+  geom_line(data = ec_tmp2, size = 1) +
+  theme(
+    aspect.ratio = 1,
+    legend.title = element_blank()
+  )
+ec_mp1
+
+ggsave("figures/Fig7.png", dpi = 300, width = 9, height = 3.5)
+ggsave("figures/Fig7.pdf", dpi = 300, width = 9, height = 3.5)
+```
+
+
+```{r ec-combo-figure, fig.width = 8, fig.height = 5.2}
+set.seed(999)
+p1 <- subplot(e4_p1, 9)
+p2 <- e4_p2
+p3 <- e4_mp1 + theme(aspect.ratio = 1)
+((p1 / p2) & theme(legend.position = "none") | p3) +
+  plot_layout(widths = c(3.8, 6.2)) +
+  plot_annotation(tag_levels = "A")
+```
+
+## Experiment 5
+
+There were two missing values of accuracy.
+
+```{r e5-data-load}
+dat5 <- read_excel(
+  "data/CuriosityPaperAllExperimentData.xlsx", 
+  sheet = "Exp5"
+) %>% 
+  clean_names() %>% 
+  transmute(
+    subject = factor(participant_public_id),
+    accuracy = factor(
+      lenient_correct, 
+      levels = 0:1, 
+      labels = c("Error", "Correct")
+    ),
+    confidence = as.numeric(conf1),
+    curiosity = as.numeric(curious_post_feedback),
+    item = factor(question)
+  )
+
+# Subject-mean centered confidence if needed
+dat5 <- dat5 %>%
+  group_by(subject) %>%
+  mutate(
+    confidence_c = (confidence - mean(confidence, na.rm = TRUE)),
+  ) %>%
+  ungroup()
+
+# Create polynomial predictors
+# in a way that are easier to understand
+dat5 <- dat5 %>%
+  poly_add_columns(confidence, degree = 2, prefix = "c", scale_width = 101)
+
+tabyl(dat5, accuracy) %>% 
+  kbl() %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+dat5 <- drop_na(dat5, accuracy)
+```
+
+### Summary
+
+Summary of accuracy
+
+```{r e5-accuracy}
+dat5 %>%
+  group_by(subject) %>%
+  summarise(
+    accuracy = mean(accuracy == "Correct", na.rm = TRUE),
+    confidence = mean(confidence / 100, na.rm = TRUE)
+  ) %>%
+  summarise(
+    m_accuracy = mean(accuracy), sd_accuracy = sd(accuracy),
+    m_confidence = mean(confidence), sd_confidence = sd(confidence)
+  ) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Gamma correlation confidence - accuracy
+
+```{r e5-gamma}
+dat5 %>%
+  group_by(subject) %>%
+  summarise(
+    resolution = GKgamma(table(accuracy, confidence))$gamma
+  ) %>%
+  summarise(m_resolution = mean(resolution), sd_resolution = sd(resolution)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Data figure
+
+#### All participants
+
+```{r e5-data-figure, fig.width = 9, fig.height = 9, layout = "l-page",}
+e5_p1 <- dat5 %>%
+  ggplot(aes(confidence, curiosity, color = accuracy)) +
+  scale_color_brewer(
+    "Accuracy",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  coord_cartesian(ylim = c(0, 100), xlim = c(0, 100)) +
+  scale_x_continuous(
+    "Confidence",
+    breaks = pretty_breaks(3)
+  ) +
+  scale_y_continuous(
+    "Response",
+    breaks = pretty_breaks(3)
+  ) +
+  geom_point(shape = 1) +
+  facet_wrap("subject") +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "right",
+    strip.background = element_blank(),
+    strip.text = element_blank()
+  )
+e5_p1
+```
+
+#### Summary
+
+```{r e5-data-figure-2, fig.cap = "Means and 95%CIs for binned confidence. Empty points are individual participants' mean curiosity at each confidence bin."}
+e5_p2 <- dat5 %>%
+  mutate(confidence = cut(confidence, 3)) %>%
+  group_by(subject, accuracy, confidence) %>%
+  summarise(curiosity = mean(curiosity, na.rm = TRUE)) %>%
+  ggplot(aes(confidence, curiosity, col = accuracy)) +
+  scale_color_brewer(
+    "Accuracy",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  coord_cartesian(ylim = c(0, 100)) +
+  scale_x_discrete("Confidence", expand = expansion(.1)) +
+  scale_y_continuous("Response", breaks = pretty_breaks(3)) +
+  geom_quasirandom(
+    width = .1, shape = 1, dodge.width = .4, alpha = 1 / 3, size = 0.75
+  ) +
+  stat_summary(
+    fun = mean, geom = "line", aes(group = accuracy),
+    position = position_dodge(.4), show.legend = FALSE,
+    size = .25
+  ) +
+  stat_summary(
+    fun.data = mean_cl_boot, position = position_dodge(.4),
+    fatten = 2.5
+  )
+e5_p2
+```
+
+### ANOVA
+
+Three bins
+
+```{r e5-anova}
+dat5_aov <- dat5 %>%
+  drop_na(curiosity) %>% 
+  mutate(conf_bin = cut(confidence, 3)) %>%
+  group_by(subject, accuracy, conf_bin) %>%
+  summarise(curiosity = mean(curiosity, na.rm = TRUE))
+
+fit_aov <- aov_ez(
+  data = dat5_aov,
+  id = "subject",
+  dv = "curiosity",
+  within = c("conf_bin", "accuracy")
+)
+anova(fit_aov, intercept = TRUE) %>%
+  kbl(
+    digits = c(rep(1, 5), 4),
+    caption = "Experiment 5 ANOVA"
+  ) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Multilevel model
+
+```{r e5-brm-fit}
+hmc$formula <- curiosity ~ (c1 + c2) * accuracy +
+  ((c1 + c2) * accuracy | subject) + 
+  (1 | item)
+hmc$data <- dat5
+hmc$file <- "models/brm-exp5-a"
+fit5.a <- do.call(brm, hmc)
+
+hmc$formula <- curiosity ~ c1 * accuracy +
+  (c1 * accuracy | subject) + 
+  (1 | item)
+hmc$file <- "models/brm-exp5-b"
+fit5.b <- do.call(brm, hmc)
+```
+
+Model comparison favored the quadratic model
+
+```{r e5-waic}
+waic5 <- waicm(fit5.a, fit5.b)
+waic5$diffs
+```
+
+Model summary
+
+```{r e5-brm-summary}
+describe_posterior(
+  fit5.a,
+  test = "pd", ci = 0.95, centrality = "mean",
+  effects = "fixed", diagnostic = NULL, dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Linear effect in each cell and differences therein
+
+```{r e5-contrasts-linear}
+# Effect in each cell
+emm <- emtrends(
+  fit5.a,
+  var = "c1", by = c("accuracy"),
+  at = list(c1 = 0, c2 = -32.9)
+)
+describe_posterior(
+  emm,
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Quadratic effect in each cell and differences therein
+
+```{r e5-contrasts-quadratic}
+# Effect in each cell
+emm <- emtrends(
+  fit5.a,
+  var = "c2", by = c("accuracy"),
+  at = list(c1 = 0, c2 = -32.9)
+)
+describe_posterior(
+  emm,
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Post hoc test at high confidence
+
+```{r e5-post-hoc}
+ats <- distinct(dat5, confidence, c1, c2) %>%
+  filter(confidence == 90)
+emm <- emmeans(
+  fit5.a,
+  "accuracy",
+  by = c("c1", "c2"),
+  at = list(c1 = ats$c1, c2 = ats$c2)
+)
+describe_posterior(
+  pairs(emm),
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  mutate(Parameter = str_sub(Parameter, 1, 15)) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Model figure
+
+```{r e5-brm-figure}
+e5_tmp1 <- distinct(
+  dat5, subject, accuracy, c1, c2
+) %>%
+  add_epred_draws(
+    fit5.a,
+    re_formula = ~ ((c1 + c2) * accuracy | subject)
+  ) %>%
+  mean_qi(.width = .95) %>%
+  ungroup()
+e5_tmp2 <- distinct(
+  dat5, accuracy, c1, c2
+) %>%
+  add_epred_draws(fit5.a, re_formula = NA) %>%
+  mean_qi(.width = .95)
+e5_mp1 <- e5_tmp1 %>%
+  ggplot(aes(c1 + 50, .epred, col = accuracy, fill = accuracy)) +
+  scale_color_brewer(
+    "Accuracy",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  scale_x_continuous("Confidence", expand = expansion(.01)) +
+  scale_y_continuous("Curiosity") +
+  coord_cartesian(ylim = c(0, 100)) +
+  geom_line(
+    aes(group = interaction(subject, accuracy)),
+    size = .2, alpha = 1 / 3
+  ) +
+  geom_ribbon(
+    data = e5_tmp2, aes(ymin = .lower, ymax = .upper),
+    col = NA, alpha = .33
+  ) +
+  geom_line(data = e5_tmp2, size = 1) +
+  theme(aspect.ratio = 1)
+e5_mp1
+```
+
+Many panels
+
+```{r e5-combo-figure, fig.width = 8, fig.height = 5.2}
+set.seed(999)
+p1 <- subplot(e5_p1, 9)
+p2 <- e5_p2
+p3 <- e5_mp1 + theme(aspect.ratio = 1)
+((p1 / p2) & theme(legend.position = "none") | p3) +
+  plot_layout(widths = c(3.8, 6.2)) +
+  plot_annotation(tag_levels = "A")
+```
+
+## Compare control and 5
+
+```{r ec5-fit}
+datc5 <- bind_rows(
+  "Control" = datc, 
+  "Experiment 5" = dat5,
+  .id = "experiment"
+) %>% 
+  mutate(experiment = factor(experiment))
+hmc$formula <- curiosity ~ (c1 + c2) * accuracy * experiment +
+  ((c1 + c2) * accuracy | subject) + 
+  (1 | item)
+hmc$data <- datc5
+hmc$file <- "models/brm-expc5-a"
+fitc5.a <- do.call(brm, hmc)
+```
+
+Model summary
+
+```{r ec5-brm-summary}
+describe_posterior(
+  fitc5.a,
+  test = "pd", ci = 0.95, centrality = "mean",
+  effects = "fixed", diagnostic = NULL, dispersion = TRUE
+) %>%
+  as_tibble() %>% 
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2, caption = "Summary of model comparing control and Experiment 5") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Linear effect in each cell and differences therein
+
+```{r ec5-contrasts}
+# Effect in each cell
+emm <- emtrends(
+  fitc5.a,
+  var = "c1", by = c("experiment", "accuracy"),
+  at = list(c1 = 0, c2 = -33)
+)
+
+bind_rows(
+  "Slope" = describe_posterior(
+    emm,
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  ),
+  "Difference" = describe_posterior(
+    pairs(emm, reverse = TRUE),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  ),
+  .id = "Test"
+) %>%
+  mutate(Parameter = str_remove(Parameter, "0, -32.9, ")) %>% 
+  mutate(Parameter = str_remove_all(Parameter, "0 -32.9 ")) %>% 
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2, caption = "Linear trends and contrasts") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+
+emm <- emtrends(
+  fitc5.a,
+  var = "c2", by = c("experiment", "accuracy"),
+  at = list(c1 = 0, c2 = -33)
+)
+
+bind_rows(
+  "Slope" = describe_posterior(
+    emm,
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  ),
+  "Difference" = describe_posterior(
+    pairs(emm, reverse = TRUE),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  ),
+  .id = "Test"
+) %>%
+  mutate(Parameter = str_remove(Parameter, "0, -32.9, ")) %>% 
+  mutate(Parameter = str_remove_all(Parameter, "0 -32.9 ")) %>% 
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2, caption = "Quadratic terms and contrasts") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Post hoc test at different confidence levels
+
+```{r ec5-post-hoc}
+ats <- distinct(datc5, confidence, c1, c2) %>%
+  arrange(c1) %>% 
+  filter(confidence %in% c(10, 50, 90)) %>% 
+  mutate(across(c1:c2, ~round(.)))
+emm1 <- emmeans(
+  fitc5.a,
+  "experiment",
+  by = c("accuracy", "c1", "c2"),
+  at = list(c1 = ats$c1[1], c2 = ats$c2[1])
+)
+emm2 <- emmeans(
+  fitc5.a,
+  "experiment",
+  by = c("accuracy", "c1", "c2"),
+  at = list(c1 = ats$c1[2], c2 = ats$c2[2])
+)
+emm3 <- emmeans(
+  fitc5.a,
+  "experiment",
+  by = c("accuracy", "c1", "c2"),
+  at = list(c1 = ats$c1[3], c2 = ats$c2[3])
+)
+
+bind_rows(
+  describe_posterior(
+    pairs(emm1, reverse = TRUE),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  ),
+  describe_posterior(
+    pairs(emm2, reverse = TRUE),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  ),
+  describe_posterior(
+    pairs(emm3, reverse = TRUE),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  )
+) %>% 
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Model figure
+
+```{r}
+ec5_tmp1 <- distinct(
+  datc5, experiment, subject, accuracy, c1, c2
+) %>%
+  add_epred_draws(
+    fitc5.a,
+    re_formula = ~ ((c1 + c2) * accuracy | subject)
+  ) %>%
+  mean_qi(.width = .95) %>%
+  ungroup()
+ec5_tmp2 <- distinct(
+  datc5, experiment, accuracy, c1, c2
+) %>%
+  add_epred_draws(fitc5.a, re_formula = NA) %>%
+  mean_qi(.width = .95) %>% 
+  mutate(
+    color = factor(
+      interaction(experiment, accuracy), 
+      levels = c(
+        "Experiment 5.Correct", "Control.Correct", 
+        "Experiment 5.Error", "Control.Error"
+      ),
+      labels = c(
+        "True Feedback Correct", "No Feedback Correct", 
+        "True Feedback Error", "No Feedback Error"
+      )
+    )
+  )
+
+ec5_tmp2 %>% 
+  distinct(experiment, accuracy, color)
+
+ec5_tmp1 %>%
+  mutate(
+    color = factor(
+      interaction(experiment, accuracy), 
+      levels = c(
+        "Experiment 5.Correct", "Control.Correct", 
+        "Experiment 5.Error", "Control.Error"
+      ),
+      labels = c(
+        "True Feedback Correct", "No Feedback Correct", 
+        "True Feedback Error", "No Feedback Error"
+      )
+    )
+  ) %>% 
+  mutate(accuracy = fct_rev(accuracy)) %>% 
+  ggplot(aes(c1 + 50, .epred, col = color, fill = color)) +
+  scale_color_manual(
+    values = Palette[c(1,3,2,4)], aesthetics = c("color", "fill")
+  ) +
+  scale_x_continuous("Confidence", expand = expansion(.01)) +
+  scale_y_continuous("Curiosity") +
+  coord_cartesian(ylim = c(0, 100)) +
+  geom_line(
+    aes(group = interaction(subject, accuracy)),
+    size = .2, alpha = 1 / 3
+  ) +
+  geom_ribbon(
+    data = ec5_tmp2 %>% mutate(accuracy = fct_rev(accuracy)), 
+    aes(ymin = .lower, ymax = .upper),
+    col = NA, alpha = .25
+  ) +
+  geom_line(
+    data = ec5_tmp2 %>% mutate(accuracy = fct_rev(accuracy)), 
+    size = 1
+  ) +
+  facet_wrap("accuracy") +
+  guides(color = guide_legend(byrow = TRUE)) +
+  theme(
+    aspect.ratio = 1,
+    strip.background.x = element_blank(), 
+    panel.spacing.x = unit(12, "pt"),
+    legend.title = element_blank()
+  )
+
+ggsave("figures/Fig8.png", dpi = 300, width = 9, height = 3.5)
+ggsave("figures/Fig8.pdf", dpi = 300, width = 9, height = 3.5)
+```
+
+
+## Experiment 6
+
+There was one missing accuracy value
+
+```{r e6-data-load}
+dat6 <- read_excel(
+  "data/CuriosityPaperAllExperimentData.xlsx", 
+  sheet = "Exp6"
+) %>% 
+  clean_names() %>% 
+  transmute(
+    subject = factor(participant_public_id),
+    accuracy = factor(
+      lenient_correct, 
+      levels = 0:1, 
+      labels = c("Error", "Correct")
+    ),
+    confidence = as.numeric(confidence_rating),
+    belief = as.numeric(sureof_given_answer_rating),
+    item = factor(question)
+  )
+
+# Subject-mean centered confidence if needed
+dat6 <- dat6 %>%
+  group_by(subject) %>%
+  mutate(
+    confidence_c = (confidence - mean(confidence, na.rm = TRUE)),
+  ) %>%
+  ungroup()
+
+# Create polynomial predictors
+# in a way that are easier to understand
+dat6 <- dat6 %>%
+  poly_add_columns(confidence, degree = 2, prefix = "c", scale_width = 101)
+length(unique(dat6$item))
+
+tabyl(dat6, accuracy) %>% 
+  kbl() %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+dat6 <- drop_na(dat6, accuracy)
+```
+
+### Summary
+
+Summary of accuracy
+
+```{r e6-accuracy}
+dat6 %>%
+  group_by(subject) %>%
+  summarise(
+    accuracy = mean(accuracy == "Correct", na.rm = TRUE),
+    confidence = mean(confidence / 100, na.rm = TRUE)
+  ) %>%
+  summarise(
+    m_accuracy = mean(accuracy), sd_accuracy = sd(accuracy),
+    m_confidence = mean(confidence), sd_confidence = sd(confidence)
+  ) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Gamma correlation confidence - accuracy
+
+```{r e6-gamma}
+dat6 %>%
+  group_by(subject) %>%
+  summarise(
+    resolution = GKgamma(table(accuracy, confidence))$gamma
+  ) %>%
+  summarise(m_resolution = mean(resolution), sd_resolution = sd(resolution)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Data figure
+
+#### All participants
+
+```{r e6-data-figure, fig.width = 9, fig.height = 9, layout = "l-page",}
+e6_p1 <- dat6 %>%
+  ggplot(aes(confidence, belief, color = accuracy)) +
+  scale_color_brewer(
+    "Accuracy",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  coord_cartesian(ylim = c(0, 100), xlim = c(0, 100)) +
+  scale_x_continuous(
+    "Confidence",
+    breaks = pretty_breaks(3)
+  ) +
+  scale_y_continuous(
+    "Belief in answer",
+    breaks = pretty_breaks(3)
+  ) +
+  geom_point(shape = 1) +
+  facet_wrap("subject") +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "right",
+    strip.background = element_blank(),
+    strip.text = element_blank()
+  )
+e6_p1
+```
+
+#### Summary
+
+```{r e6-data-figure-2, fig.cap = "Means and 95%CIs for binned confidence. Empty points are individual participants' mean curiosity at each confidence bin."}
+e6_p2 <- dat6 %>%
+  mutate(confidence = cut(confidence, 3)) %>%
+  group_by(subject, accuracy, confidence) %>%
+  summarise(belief = mean(belief, na.rm = TRUE)) %>%
+  ggplot(aes(confidence, belief, col = accuracy)) +
+  scale_color_brewer(
+    "Accuracy",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  coord_cartesian(ylim = c(0, 100)) +
+  scale_x_discrete("Confidence", expand = expansion(.1)) +
+  scale_y_continuous("Belief in answer", breaks = pretty_breaks(3)) +
+  geom_quasirandom(
+    width = .1, shape = 1, dodge.width = .4, alpha = 1 / 3, size = 0.75
+  ) +
+  stat_summary(
+    fun = mean, geom = "line", aes(group = accuracy),
+    position = position_dodge(.4), show.legend = FALSE,
+    size = .25
+  ) +
+  stat_summary(
+    fun.data = mean_cl_boot, position = position_dodge(.4),
+    fatten = 2.5
+  )
+e6_p2
+```
+
+### ANOVA
+
+Three bins
+
+```{r e6-anova}
+dat6_aov <- dat6 %>%
+  drop_na(belief) %>% 
+  mutate(conf_bin = cut(confidence, 3)) %>%
+  group_by(subject, accuracy, conf_bin) %>%
+  summarise(belief = mean(belief, na.rm = TRUE))
+
+fit_aov <- aov_ez(
+  data = dat6_aov,
+  id = "subject",
+  dv = "belief",
+  within = c("conf_bin", "accuracy")
+)
+anova(fit_aov, intercept = TRUE) %>%
+  kbl(
+    digits = c(rep(1, 5), 4),
+    caption = "Experiment 6 ANOVA"
+  ) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Multilevel model
+
+```{r e6-brm-fit}
+hmc$formula <- belief ~ (c1 + c2) * accuracy +
+  ((c1 + c2) * accuracy | subject) + 
+  (1 | item)
+hmc$data <- dat6
+hmc$file <- "models/brm-exp6-a"
+fit6.a <- do.call(brm, hmc)
+
+hmc$formula <- belief ~ c1 * accuracy +
+  (c1 * accuracy | subject) + 
+  (1 | item)
+hmc$file <- "models/brm-exp6-b"
+fit6.b <- do.call(brm, hmc)
+```
+
+Model comparison favored the quadratic model
+
+```{r e6-waic}
+waic6 <- waicm(fit6.a, fit6.b)
+waic6$diffs
+```
+
+Model summary
+
+```{r e6-brm-summary}
+describe_posterior(
+  fit6.a,
+  test = "pd", ci = 0.95, centrality = "mean",
+  effects = "fixed", diagnostic = NULL, dispersion = TRUE
+) %>%
+  as_tibble() %>% 
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2, caption = "Experiment 6 model summary") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Linear effect in each cell and differences therein
+
+```{r e6-contrasts-linear}
+# Effect in each cell
+emm <- emtrends(
+  fit6.a,
+  var = "c1", by = c("accuracy"),
+  at = list(c1 = 0, c2 = -32.9)
+)
+describe_posterior(
+  emm,
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Model figure
+
+```{r e6-brm-figure}
+e6_tmp1 <- distinct(
+  dat6, subject, accuracy, c1, c2
+) %>%
+  add_epred_draws(
+    fit6.a,
+    re_formula = ~ ((c1 + c2) * accuracy | subject)
+  ) %>%
+  mean_qi(.width = .95) %>%
+  ungroup()
+e6_tmp2 <- distinct(
+  dat6, accuracy, c1, c2
+) %>%
+  add_epred_draws(fit6.a, re_formula = NA) %>%
+  mean_qi(.width = .95) %>% 
+  mutate(accuracy = fct_rev(accuracy))
+e6_mp1 <- e6_tmp1 %>%
+  mutate(accuracy = fct_rev(accuracy)) %>% 
+  ggplot(aes(c1 + 50, .epred, col = accuracy, fill = accuracy)) +
+  scale_color_manual(
+    values = Palette[1:2], aesthetics = c("color", "fill")
+  ) +
+  scale_x_continuous("Confidence", expand = expansion(.01)) +
+  scale_y_continuous("Belief in True Feedback") +
+  coord_cartesian(ylim = c(0, 100)) +
+  geom_line(
+    aes(group = interaction(subject, accuracy)),
+    size = .2, alpha = 1 / 3
+  ) +
+  geom_ribbon(
+    data = e6_tmp2, aes(ymin = .lower, ymax = .upper),
+    col = NA, alpha = .33
+  ) +
+  geom_line(data = e6_tmp2, size = 1) +
+  theme(
+    aspect.ratio = 1,
+    legend.title = element_blank()
+  )
+e6_mp1
+
+ggsave("figures/Fig9.png", dpi = 300, width = 9, height = 3.5)
+ggsave("figures/Fig9.pdf", dpi = 300, width = 9, height = 3.5)
+```
+
+## Experiment 7
+
+```{r e7-data-load}
+dat7 <- read_excel(
+  "data/CuriosityPaperAllExperimentData.xlsx", 
+  sheet = "Exp7"
+) %>% 
+  clean_names() %>% 
+  transmute(
+    subject = factor(participant_public_id),
+    accuracy = factor(
+      lenient_correct, 
+      levels = 0:1, 
+      labels = c("Error", "Correct")
+    ),
+    confidence = as.numeric(conf1),
+    certainty = as.numeric(conf2),
+    item = factor(question)
+  )
+
+# Create polynomial predictors
+# in a way that are easier to understand
+dat7 <- dat7 %>%
+  poly_add_columns(confidence, degree = 2, prefix = "c", scale_width = 101)
+
+tabyl(dat7, accuracy) %>% 
+  kbl() %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+dat7 <- drop_na(dat7, accuracy)
+```
+
+### Data figure
+
+#### All participants
+
+```{r e7-data-figure, fig.width = 9, fig.height = 9, layout = "l-page",}
+e7_p1 <- dat7 %>%
+  ggplot(aes(confidence, certainty, color = accuracy)) +
+  scale_color_brewer(
+    "Accuracy",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  coord_cartesian(ylim = c(0, 100), xlim = c(0, 100)) +
+  scale_x_continuous(
+    "Confidence",
+    breaks = pretty_breaks(3)
+  ) +
+  scale_y_continuous(
+    "Certainty",
+    breaks = pretty_breaks(3)
+  ) +
+  geom_point(shape = 1) +
+  facet_wrap("subject") +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "right",
+    strip.background = element_blank(),
+    strip.text = element_blank()
+  )
+e7_p1
+```
+
+#### Summary
+
+```{r e7-data-figure-2, fig.cap = "Means and 95%CIs for binned confidence. Empty points are individual participants' mean curiosity at each confidence bin."}
+e7_p2 <- dat7 %>%
+  mutate(confidence = cut(confidence, 3)) %>%
+  group_by(subject, accuracy, confidence) %>%
+  summarise(certainty = mean(certainty, na.rm = TRUE)) %>%
+  ggplot(aes(confidence, certainty, col = accuracy)) +
+  scale_color_brewer(
+    "Accuracy",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  coord_cartesian(ylim = c(0, 100)) +
+  scale_x_discrete("Confidence", expand = expansion(.1)) +
+  scale_y_continuous("Belief in answer", breaks = pretty_breaks(3)) +
+  geom_quasirandom(
+    width = .1, shape = 1, dodge.width = .4, alpha = 1 / 3, size = 0.75
+  ) +
+  stat_summary(
+    fun = mean, geom = "line", aes(group = accuracy),
+    position = position_dodge(.4), show.legend = FALSE,
+    size = .25
+  ) +
+  stat_summary(
+    fun.data = mean_cl_boot, position = position_dodge(.4),
+    fatten = 2.5
+  )
+e7_p2
+```
+
+### ANOVA
+
+Three bins
+
+```{r e7-anova}
+dat7_aov <- dat7 %>%
+  drop_na(certainty) %>% 
+  mutate(conf_bin = cut(confidence, 3)) %>%
+  group_by(subject, accuracy, conf_bin) %>%
+  summarise(certainty = mean(certainty, na.rm = TRUE))
+
+fit_aov <- aov_ez(
+  data = dat7_aov,
+  id = "subject",
+  dv = "certainty",
+  within = c("conf_bin", "accuracy")
+)
+anova(fit_aov, intercept = TRUE) %>%
+  kbl(
+    digits = c(rep(1, 5), 4),
+    caption = "Experiment 7 ANOVA"
+  ) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Multilevel model
+
+```{r e7-brm-fit}
+hmc$formula <- certainty ~ (c1 + c2) * accuracy +
+  ((c1 + c2) * accuracy | subject) + 
+  (1 | item)
+hmc$data <- dat7
+hmc$file <- "models/brm-exp7-a"
+fit7.a <- do.call(brm, hmc)
+
+hmc$formula <- certainty ~ c1 * accuracy +
+  (c1 * accuracy | subject) + 
+  (1 | item)
+hmc$file <- "models/brm-exp7-b"
+fit7.b <- do.call(brm, hmc)
+```
+
+Model comparison favored the quadratic model
+
+```{r e7-waic}
+waic7 <- waicm(fit7.a, fit7.b)
+waic7$diffs
+```
+
+Model summary
+
+```{r e7-brm-summary}
+describe_posterior(
+  fit7.a,
+  test = "pd", ci = 0.95, centrality = "mean",
+  effects = "fixed", diagnostic = NULL, dispersion = TRUE
+) %>%
+  as_tibble() %>% 
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2, caption = "Experiment 6 model summary") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Intercepts
+
+```{r}
+emm <- emmeans(fit7.a, ~ accuracy)
+describe_posterior(
+  emm,
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Linear effect in each cell and differences therein
+
+```{r e7-contrasts-linear}
+# Effect in each cell
+emm <- emtrends(
+  fit7.a,
+  var = "c1", by = c("accuracy"),
+  at = list(c1 = 0, c2 = -32.9)
+)
+describe_posterior(
+  emm,
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Model figure
+
+```{r e7-brm-figure}
+e7_tmp1 <- distinct(
+  dat7, subject, accuracy, c1, c2
+) %>%
+  add_epred_draws(
+    fit7.a,
+    re_formula = ~ ((c1 + c2) * accuracy | subject)
+  ) %>%
+  mean_qi(.width = .95) %>%
+  ungroup()
+e7_tmp2 <- distinct(
+  dat7, accuracy, c1, c2
+) %>%
+  add_epred_draws(fit7.a, re_formula = NA) %>%
+  mean_qi(.width = .95) %>% 
+  mutate(accuracy = fct_rev(accuracy))
+e7_mp1 <- e7_tmp1 %>%
+  mutate(accuracy = fct_rev(accuracy)) %>% 
+  ggplot(aes(c1 + 50, .epred, col = accuracy, fill = accuracy)) +
+  scale_color_manual(
+    values = Palette[1:2], aesthetics = c("color", "fill")
+  ) +
+  scale_x_continuous("Confidence", expand = expansion(.01)) +
+  scale_y_continuous("Knowledge of Answer after True Feedback") +
+  coord_cartesian(ylim = c(0, 100)) +
+  geom_line(
+    aes(group = interaction(subject, accuracy)),
+    size = .2, alpha = 1 / 3
+  ) +
+  geom_ribbon(
+    data = e7_tmp2, aes(ymin = .lower, ymax = .upper),
+    col = NA, alpha = .33
+  ) +
+  geom_line(data = e7_tmp2, size = 1) +
+  theme(
+    aspect.ratio = 1,
+    legend.title = element_blank()
+  )
+e7_mp1
+
+ggsave("figures/Fig10.png", dpi = 300, width = 9, height = 3.5)
+ggsave("figures/Fig10.pdf", dpi = 300, width = 9, height = 3.5)
+```
+
+## Experiment 8
+
+```{r e8-data-load}
+dat8 <- read_excel(
+  "data/CuriosityPaperAllExperimentData.xlsx", 
+  sheet = "Exp8"
+) %>% 
+  clean_names() %>% 
+  transmute(
+    subject = factor(participant_public_id),
+    accuracy = factor(
+      lenient_correct, 
+      levels = 0:1, 
+      labels = c("Error", "Correct")
+    ),
+    confidence = as.numeric(confidence1),
+    curiosity = as.numeric(curious_post_feedback),
+    item = factor(question),
+    match = error_false_answer_match
+  )
+
+# Create polynomial predictors
+# in a way that are easier to understand
+dat8 <- dat8 %>%
+  poly_add_columns(confidence, degree = 2, prefix = "c", scale_width = 101)
+
+tabyl(dat8, accuracy) %>% 
+  kbl() %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+dat8 <- drop_na(dat8, accuracy)
+```
+
+### Data figure
+
+#### All participants
+
+```{r e8-data-figure, fig.width = 9, fig.height = 9, layout = "l-page",}
+e8_p1 <- dat8 %>%
+  ggplot(aes(confidence, curiosity, color = accuracy)) +
+  scale_color_brewer(
+    "Accuracy",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  coord_cartesian(ylim = c(0, 100), xlim = c(0, 100)) +
+  scale_x_continuous(
+    "Confidence",
+    breaks = pretty_breaks(3)
+  ) +
+  scale_y_continuous(
+    "Response",
+    breaks = pretty_breaks(3)
+  ) +
+  geom_point(shape = 1) +
+  facet_wrap("subject") +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "right",
+    strip.background = element_blank(),
+    strip.text = element_blank()
+  )
+e8_p1
+```
+
+#### Summary
+
+```{r e8-data-figure-2, fig.cap = "Means and 95%CIs for binned confidence. Empty points are individual participants' mean curiosity at each confidence bin."}
+e8_p2 <- dat8 %>%
+  mutate(confidence = cut(confidence, 3)) %>%
+  group_by(subject, accuracy, confidence) %>%
+  summarise(curiosity = mean(curiosity, na.rm = TRUE)) %>%
+  ggplot(aes(confidence, curiosity, col = accuracy)) +
+  scale_color_brewer(
+    "Accuracy",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  coord_cartesian(ylim = c(0, 100)) +
+  scale_x_discrete("Confidence", expand = expansion(.1)) +
+  scale_y_continuous("Response", breaks = pretty_breaks(3)) +
+  geom_quasirandom(
+    width = .1, shape = 1, dodge.width = .4, alpha = 1 / 3, size = 0.75
+  ) +
+  stat_summary(
+    fun = mean, geom = "line", aes(group = accuracy),
+    position = position_dodge(.4), show.legend = FALSE,
+    size = .25
+  ) +
+  stat_summary(
+    fun.data = mean_cl_boot, position = position_dodge(.4),
+    fatten = 2.5
+  )
+e8_p2
+```
+
+### ANOVA
+
+Three bins
+
+```{r e8-anova}
+dat8_aov <- dat8 %>%
+  drop_na(curiosity) %>% 
+  mutate(conf_bin = cut(confidence, 3)) %>%
+  group_by(subject, accuracy, conf_bin) %>%
+  summarise(curiosity = mean(curiosity, na.rm = TRUE))
+
+fit_aov <- aov_ez(
+  data = dat8_aov,
+  id = "subject",
+  dv = "curiosity",
+  within = c("conf_bin", "accuracy")
+)
+anova(fit_aov, intercept = TRUE) %>%
+  kbl(
+    digits = c(rep(1, 5), 4),
+    caption = "Experiment 8 ANOVA"
+  ) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Multilevel model
+
+```{r e8-brm-fit}
+hmc$formula <- curiosity ~ (c1 + c2) * accuracy +
+  ((c1 + c2) * accuracy | subject) + 
+  (1 | item)
+hmc$data <- dat8
+hmc$file <- "models/brm-exp8-a"
+fit8.a <- do.call(brm, hmc)
+
+hmc$formula <- curiosity ~ c1 * accuracy +
+  (c1 * accuracy | subject) + 
+  (1 | item)
+hmc$file <- "models/brm-exp8-b"
+fit8.b <- do.call(brm, hmc)
+```
+
+Model comparison favored the quadratic model
+
+```{r e8-waic}
+waic8 <- waicm(fit8.a, fit8.b)
+waic8$diffs
+```
+
+Model summary
+
+```{r e8-brm-summary}
+describe_posterior(
+  fit8.a,
+  test = "pd", ci = 0.95, centrality = "mean",
+  effects = "fixed", diagnostic = NULL, dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Linear effect in each cell and differences therein
+
+```{r e8-contrasts-linear}
+# Effect in each cell
+emm <- emtrends(
+  fit8.a,
+  var = "c1", by = c("accuracy"),
+  at = list(c1 = 0, c2 = -32.9)
+)
+describe_posterior(
+  emm,
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Quadratic effect in each cell and differences therein
+
+```{r e8-contrasts-quadratic}
+# Effect in each cell
+emm <- emtrends(
+  fit8.a,
+  var = "c2", by = c("accuracy"),
+  at = list(c1 = 0, c2 = -32.9)
+)
+describe_posterior(
+  emm,
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Post hoc test at high confidence
+
+```{r e8-post-hoc}
+ats <- distinct(dat8, confidence, c1, c2) %>%
+  filter(confidence == 90)
+emm <- emmeans(
+  fit8.a,
+  "accuracy",
+  by = c("c1", "c2"),
+  at = list(c1 = ats$c1, c2 = ats$c2)
+)
+describe_posterior(
+  pairs(emm),
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  mutate(Parameter = str_sub(Parameter, 1, 15)) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Model figure
+
+```{r e8-brm-figure}
+e8_tmp1 <- distinct(
+  dat8, subject, accuracy, c1, c2
+) %>%
+  add_epred_draws(
+    fit8.a,
+    re_formula = ~ ((c1 + c2) * accuracy | subject)
+  ) %>%
+  mean_qi(.width = .95) %>%
+  ungroup()
+e8_tmp2 <- distinct(
+  dat8, accuracy, c1, c2
+) %>%
+  add_epred_draws(fit8.a, re_formula = NA) %>%
+  mean_qi(.width = .95)
+e8_mp1 <- e8_tmp1 %>%
+  ggplot(aes(c1 + 50, .epred, col = accuracy, fill = accuracy)) +
+  scale_color_brewer(
+    "Accuracy",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  scale_x_continuous("Confidence", expand = expansion(.01)) +
+  scale_y_continuous("Curiosity") +
+  coord_cartesian(ylim = c(0, 100)) +
+  geom_line(
+    aes(group = interaction(subject, accuracy)),
+    size = .2, alpha = 1 / 3
+  ) +
+  geom_ribbon(
+    data = e8_tmp2, aes(ymin = .lower, ymax = .upper),
+    col = NA, alpha = .33
+  ) +
+  geom_line(data = e8_tmp2, size = 1) +
+  theme(aspect.ratio = 1)
+e8_mp1
+```
+
+Many panels
+
+```{r e8-combo-figure, fig.width = 8, fig.height = 5.2}
+set.seed(999)
+p1 <- subplot(e5_p1, 9)
+p2 <- e5_p2
+p3 <- e5_mp1 + theme(aspect.ratio = 1)
+((p1 / p2) & theme(legend.position = "none") | p3) +
+  plot_layout(widths = c(3.8, 6.2)) +
+  plot_annotation(tag_levels = "A")
+```
+
+## Compare control and 8
+
+```{r ec8-fit}
+datc8 <- bind_rows(
+  "Control" = datc, 
+  "Experiment 8" = dat8,
+  .id = "experiment"
+) %>% 
+  mutate(experiment = factor(experiment))
+hmc$formula <- curiosity ~ (c1 + c2) * accuracy * experiment +
+  ((c1 + c2) * accuracy | subject) + 
+  (1 | item)
+hmc$data <- datc8
+hmc$file <- "models/brm-expc8-a"
+fitc8.a <- do.call(brm, hmc)
+```
+
+Model summary
+
+```{r ec8-brm-summary}
+describe_posterior(
+  fitc8.a,
+  test = "pd", ci = 0.95, centrality = "mean",
+  effects = "fixed", diagnostic = NULL, dispersion = TRUE
+) %>%
+  as_tibble() %>% 
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2, caption = "Summary of model comparing control and Experiment 5") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Linear effect in each cell and differences therein
+
+```{r ec8-contrasts-linear}
+# Effect in each cell
+emm <- emtrends(
+  fitc8.a,
+  var = "c1", by = c("experiment", "accuracy"),
+  at = list(c1 = 0, c2 = -33)
+)
+
+bind_rows(
+  "Slope" = describe_posterior(
+    emm,
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  ),
+  "Difference" = describe_posterior(
+    pairs(emm, reverse = TRUE),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  ),
+  .id = "Test"
+) %>%
+  mutate(Parameter = str_remove(Parameter, "0, -32.9, ")) %>% 
+  mutate(Parameter = str_remove_all(Parameter, "0 -32.9 ")) %>% 
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Post hoc test at different confidence levels
+
+```{r ec8-post-hoc}
+ats <- distinct(datc8, confidence, c1, c2) %>%
+  arrange(c1) %>% 
+  filter(confidence %in% c(10, 50, 90)) %>% 
+  mutate(across(c1:c2, ~round(.)))
+emm1 <- emmeans(
+  fitc8.a,
+  "experiment",
+  by = c("accuracy", "c1", "c2"),
+  at = list(c1 = ats$c1[1], c2 = ats$c2[1])
+)
+emm2 <- emmeans(
+  fitc8.a,
+  "experiment",
+  by = c("accuracy", "c1", "c2"),
+  at = list(c1 = ats$c1[2], c2 = ats$c2[2])
+)
+emm3 <- emmeans(
+  fitc8.a,
+  "experiment",
+  by = c("accuracy", "c1", "c2"),
+  at = list(c1 = ats$c1[3], c2 = ats$c2[3])
+)
+
+bind_rows(
+  describe_posterior(
+    pairs(emm1, reverse = TRUE),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  ),
+  describe_posterior(
+    pairs(emm2, reverse = TRUE),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  ),
+  describe_posterior(
+    pairs(emm3, reverse = TRUE),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  )
+) %>% 
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Model figure
+
+```{r}
+ec8_tmp1 <- distinct(
+  datc8, experiment, subject, accuracy, c1, c2
+) %>%
+  add_epred_draws(
+    fitc8.a,
+    re_formula = ~ ((c1 + c2) * accuracy | subject)
+  ) %>%
+  mean_qi(.width = .95) %>%
+  ungroup()
+ec8_tmp2 <- distinct(
+  datc8, experiment, accuracy, c1, c2
+) %>%
+  add_epred_draws(fitc8.a, re_formula = NA) %>%
+  mean_qi(.width = .95) %>% 
+  mutate(accuracy = fct_rev(accuracy)) %>% 
+  mutate(
+    color = factor(
+      interaction(experiment, accuracy), 
+      levels = c(
+        "Experiment 8.Correct", "Control.Correct", 
+        "Experiment 8.Error", "Control.Error"
+      ),
+      labels = c(
+        "False Feedback Correct", "No Feedback Correct", 
+        "False Feedback Error", "No Feedback Error"
+      )
+    )
+  )
+ec8_tmp1 %>%
+  mutate(accuracy = fct_rev(accuracy)) %>% 
+  mutate(
+    color = factor(
+      interaction(experiment, accuracy), 
+      levels = c(
+        "Experiment 8.Correct", "Control.Correct", 
+        "Experiment 8.Error", "Control.Error"
+      ),
+      labels = c(
+        "False Feedback Correct", "No Feedback Correct", 
+        "False Feedback Error", "No Feedback Error"
+      )
+    )
+  ) %>% 
+  ggplot(aes(c1 + 50, .epred, col = color, fill = color)) +
+  scale_color_manual(
+    values = Palette[c(1,3,2,4)], aesthetics = c("color", "fill")
+  ) +
+  scale_x_continuous("Confidence", expand = expansion(.01)) +
+  scale_y_continuous("Curiosity") +
+  coord_cartesian(ylim = c(0, 100)) +
+  geom_line(
+    aes(group = interaction(subject, accuracy)),
+    size = .2, alpha = 1 / 3
+  ) +
+  geom_ribbon(
+    data = ec8_tmp2, 
+    aes(ymin = .lower, ymax = .upper),
+    col = NA, alpha = .25
+  ) +
+  geom_line(
+    data = ec8_tmp2, 
+    size = 1
+  ) +
+  facet_wrap(
+    "accuracy", ncol = 2
+  ) +
+  theme(
+    aspect.ratio = 1,
+    legend.title = element_blank(),
+    panel.spacing.x = unit(14, "pt"),
+    strip.background = element_blank()
+  )
+
+ggsave("figures/Fig11.png", dpi = 300, width = 9, height = 3.5)
+ggsave("figures/Fig11.pdf", dpi = 300, width = 9, height = 3.5)
+```
+
+### Matches?
+
+```{r e8-fit-errors}
+dat8_errors <- filter(dat8, accuracy == "Error") %>% 
+  mutate(match = factor(match, levels = 0:1, labels = c("No", "Yes")))
+dat8_errors
+tabyl(dat8_errors, match, accuracy)
+
+hmc$formula <- curiosity ~ (c1 + c2) * match +
+  ((c1 + c2) * match | subject) + 
+  (1 | item)
+hmc$data <- dat8_errors
+hmc$file <- "models/brm-exp8-errors-a"
+fit8_errors.a <- do.call(brm, hmc)
+```
+
+Model summary
+
+```{r e8-errors-brm-summary}
+describe_posterior(
+  fit8_errors.a,
+  test = "pd", ci = 0.95, centrality = "mean",
+  effects = "fixed", diagnostic = NULL, dispersion = TRUE
+) %>%
+  as_tibble() %>% 
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Linear effect in each cell and differences therein
+
+```{r e8-errors-contrasts-linear}
+# Effect in each cell
+emm <- emtrends(
+  fit8_errors.a,
+  var = "c1", by = c("accuracy"),
+  at = list(c1 = 0, c2 = -32.9)
+)
+describe_posterior(
+  emm,
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Model figure
+
+```{r e8-errors-brm-figure}
+e8e_tmp1 <- distinct(
+  dat8_errors, subject, match, c1, c2
+) %>%
+  add_epred_draws(
+    fit8_errors.a,
+    re_formula = ~ ((c1 + c2) * match | subject)
+  ) %>%
+  mean_qi(.width = .95) %>%
+  ungroup()
+e8e_tmp2 <- distinct(
+  dat8_errors, match, c1, c2
+) %>%
+  add_epred_draws(fit8_errors.a, re_formula = NA) %>%
+  mean_qi(.width = .95)
+e8e_mp1 <- e8e_tmp1 %>%
+  ggplot(aes(c1 + 50, .epred, col = match, fill = match)) +
+  scale_color_brewer(
+    "Match",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  scale_x_continuous("Confidence", expand = expansion(.01)) +
+  scale_y_continuous("Curiosity") +
+  coord_cartesian(ylim = c(0, 100)) +
+  geom_line(
+    aes(group = interaction(subject, match)),
+    size = .2, alpha = 1 / 3
+  ) +
+  geom_ribbon(
+    data = e8e_tmp2, aes(ymin = .lower, ymax = .upper),
+    col = NA, alpha = .33
+  ) +
+  geom_line(data = e8e_tmp2, size = 1) +
+  theme(aspect.ratio = 1)
+e8e_mp1
+```
+
+## Experiment 9
+
+```{r e9-data-load}
+dat9 <- read_excel(
+  "data/CuriosityPaperAllExperimentData.xlsx", 
+  sheet = "Exp9"
+) %>% 
+  clean_names() %>% 
+  transmute(
+    subject = factor(participant_public_id),
+    accuracy = factor(
+      lenient_correct, 
+      levels = 0:1, 
+      labels = c("Error", "Correct")
+    ),
+    confidence = as.numeric(confidence_rating),
+    belief = as.numeric(sureof_given_answer_rating),
+    item = factor(question),
+    feedback_truth_value
+  ) %>% 
+  # Only false feedback
+  filter(!feedback_truth_value) %>% 
+  select(-feedback_truth_value)
+
+
+# Create polynomial predictors
+# in a way that are easier to understand
+dat9 <- dat9 %>%
+  poly_add_columns(confidence, degree = 2, prefix = "c", scale_width = 101)
+
+tabyl(dat9, accuracy) %>% 
+  kbl() %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+dat9 <- drop_na(dat9, accuracy)
+```
+
+### Data figure
+
+#### All participants
+
+```{r e9-data-figure, fig.width = 9, fig.height = 9, layout = "l-page",}
+e9_p1 <- dat9 %>%
+  ggplot(aes(confidence, belief, color = accuracy)) +
+  scale_color_brewer(
+    "Accuracy",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  coord_cartesian(ylim = c(0, 100), xlim = c(0, 100)) +
+  scale_x_continuous(
+    "Confidence",
+    breaks = pretty_breaks(3)
+  ) +
+  scale_y_continuous(
+    "Belief",
+    breaks = pretty_breaks(3)
+  ) +
+  geom_point(shape = 1) +
+  facet_wrap("subject") +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "right",
+    strip.background = element_blank(),
+    strip.text = element_blank()
+  )
+e9_p1
+```
+
+#### Summary
+
+```{r e9-data-figure-2, fig.cap = "Means and 95%CIs for binned confidence. Empty points are individual participants' mean curiosity at each confidence bin."}
+e9_p2 <- dat9 %>%
+  mutate(confidence = cut(confidence, 3)) %>%
+  group_by(subject, accuracy, confidence) %>%
+  summarise(belief = mean(belief, na.rm = TRUE)) %>%
+  ggplot(aes(confidence, belief, col = accuracy)) +
+  scale_color_brewer(
+    "Accuracy",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  coord_cartesian(ylim = c(0, 100)) +
+  scale_x_discrete("Confidence", expand = expansion(.1)) +
+  scale_y_continuous("Belief", breaks = pretty_breaks(3)) +
+  geom_quasirandom(
+    width = .05, shape = 1, dodge.width = .3, alpha = 0.5, size = 1
+  ) +
+  stat_summary(
+    fun = mean, geom = "line", aes(group = accuracy),
+    position = position_dodge(.3), show.legend = FALSE,
+    size = .25
+  ) +
+  stat_summary(
+    fun.data = mean_cl_boot, position = position_dodge(.3),
+    fatten = 2.5
+  )
+e9_p2
+```
+
+### ANOVA
+
+Three bins
+
+```{r e9-anova}
+dat9_aov <- dat9 %>%
+  drop_na(belief) %>% 
+  mutate(conf_bin = cut(confidence, 3)) %>%
+  group_by(subject, accuracy, conf_bin) %>%
+  summarise(belief = mean(belief, na.rm = TRUE))
+
+fit_aov <- aov_ez(
+  data = dat9_aov,
+  id = "subject",
+  dv = "belief",
+  within = c("conf_bin", "accuracy")
+)
+anova(fit_aov, intercept = TRUE) %>%
+  kbl(
+    digits = c(rep(1, 5), 4),
+    caption = "Experiment 9 ANOVA"
+  ) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Multilevel model
+
+```{r e9-brm-fit}
+hmc$formula <- belief ~ (c1 + c2) * accuracy +
+  ((c1 + c2) * accuracy | subject) + 
+  (1 | item)
+hmc$data <- dat9
+hmc$file <- "models/brm-exp9-a"
+fit9.a <- do.call(brm, hmc)
+
+hmc$formula <- belief ~ c1 * accuracy +
+  (c1 * accuracy | subject) + 
+  (1 | item)
+hmc$file <- "models/brm-exp9-b"
+fit9.b <- do.call(brm, hmc)
+```
+
+Model comparison favored neither model strongly
+
+```{r e9-waic}
+waic9 <- waicm(fit9.a, fit9.b)
+waic9$diffs
+```
+
+Model summary
+
+```{r e9-brm-summary}
+describe_posterior(
+  fit9.a,
+  test = "pd", ci = 0.95, centrality = "mean",
+  effects = "fixed", diagnostic = NULL, dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Linear effect in each cell and differences therein
+
+```{r e9-contrasts-linear}
+# Effect in each cell
+emm <- emtrends(
+  fit9.a,
+  var = "c1", by = c("accuracy"),
+  at = list(c1 = 0, c2 = -32.9)
+)
+describe_posterior(
+  emm,
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Quadratic effect in each cell and differences therein
+
+```{r e9-contrasts-quadratic}
+# Effect in each cell
+emm <- emtrends(
+  fit9.a,
+  var = "c2", by = c("accuracy"),
+  at = list(c1 = 0, c2 = -32.9)
+)
+describe_posterior(
+  emm,
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Post hoc tests
+
+```{r e9-post-hoc}
+ats <- distinct(dat9, confidence, c1, c2) %>%
+  arrange(c1) %>% 
+  filter(confidence %in% c(10, 50, 90)) %>% 
+  mutate(across(c1:c2, ~round(.)))
+
+emm1 <- emmeans(
+  fit9.a,
+  "accuracy",
+  by = c("c1", "c2"),
+  at = list(c1 = ats$c1[1], c2 = ats$c2[1])
+)
+emm2 <- emmeans(
+  fit9.a,
+  "accuracy",
+  by = c("c1", "c2"),
+  at = list(c1 = ats$c1[2], c2 = ats$c2[2])
+)
+emm3 <- emmeans(
+  fit9.a,
+  "accuracy",
+  by = c("c1", "c2"),
+  at = list(c1 = ats$c1[3], c2 = ats$c2[3])
+)
+
+bind_rows(
+  describe_posterior(
+    pairs(emm1, reverse = TRUE),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  ),
+  describe_posterior(
+    pairs(emm2, reverse = TRUE),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  ),
+  describe_posterior(
+    pairs(emm3, reverse = TRUE),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  )
+) %>% 
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Model figure
+
+```{r e9-brm-figure}
+e9_tmp1 <- distinct(
+  dat9, subject, accuracy, c1, c2
+) %>%
+  add_epred_draws(
+    fit9.a,
+    re_formula = ~ ((c1 + c2) * accuracy | subject)
+  ) %>%
+  mean_qi(.width = .95) %>%
+  ungroup()
+e9_tmp2 <- distinct(
+  dat9, accuracy, c1, c2
+) %>%
+  add_epred_draws(fit9.a, re_formula = NA) %>%
+  mean_qi(.width = .95) %>% 
+  mutate(accuracy = fct_rev(accuracy))
+e9_mp1 <- e9_tmp1 %>%
+  mutate(accuracy = fct_rev(accuracy)) %>% 
+  ggplot(aes(c1 + 50, .epred, col = accuracy, fill = accuracy)) +
+  scale_color_manual(
+    values = Palette[1:2], aesthetics = c("color", "fill")
+  ) +
+  scale_x_continuous("Confidence", expand = expansion(.01)) +
+  scale_y_continuous("Belief in False Feedback") +
+  coord_cartesian(ylim = c(0, 100)) +
+  geom_line(
+    aes(group = interaction(subject, accuracy)),
+    size = .2, alpha = 1 / 3
+  ) +
+  geom_ribbon(
+    data = e9_tmp2, aes(ymin = .lower, ymax = .upper),
+    col = NA, alpha = .33
+  ) +
+  geom_line(data = e9_tmp2, size = 1) +
+  theme(
+    aspect.ratio = 1,
+    legend.title = element_blank()
+  )
+e9_mp1
+
+ggsave("figures/Fig12.png", dpi = 300, width = 9, height = 3.5)
+ggsave("figures/Fig12.pdf", dpi = 300, width = 9, height = 3.5)
+```
+
+## Experiment 10
+
+```{r e10-data-load}
+dat10 <- read_excel(
+  "data/CuriosityPaperAllExperimentData.xlsx", 
+  sheet = "Exp10"
+) %>% 
+  clean_names() %>% 
+  transmute(
+    subject = factor(participant_public_id),
+    accuracy = factor(
+      lenient_correct, 
+      levels = 0:1, 
+      labels = c("Error", "Correct")
+    ),
+    confidence = as.numeric(conf1),
+    confidence_2 = as.numeric(conf2),
+    item = factor(question)
+  )
+
+# Create polynomial predictors
+# in a way that are easier to understand
+dat10 <- dat10 %>%
+  poly_add_columns(confidence, degree = 2, prefix = "c", scale_width = 101)
+
+tabyl(dat10, accuracy) %>% 
+  kbl() %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+dat10 <- drop_na(dat10, accuracy)
+```
+
+### Data figure
+
+#### All participants
+
+```{r e10-data-figure, fig.width = 9, fig.height = 9, layout = "l-page",}
+e10_p1 <- dat10 %>%
+  ggplot(aes(confidence, confidence_2, color = accuracy)) +
+  scale_color_brewer(
+    "Accuracy",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  coord_cartesian(ylim = c(0, 100), xlim = c(0, 100)) +
+  scale_x_continuous(
+    "Confidence",
+    breaks = pretty_breaks(3)
+  ) +
+  scale_y_continuous(
+    "Confidence (2)",
+    breaks = pretty_breaks(3)
+  ) +
+  geom_point(shape = 1) +
+  facet_wrap("subject") +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "right",
+    strip.background = element_blank(),
+    strip.text = element_blank()
+  )
+e10_p1
+```
+
+#### Summary
+
+```{r e10-data-figure-2, fig.cap = "Means and 95%CIs for binned confidence. Empty points are individual participants' mean curiosity at each confidence bin."}
+e10_p2 <- dat10 %>%
+  mutate(confidence = cut(confidence, 3)) %>%
+  group_by(subject, accuracy, confidence) %>%
+  summarise(confidence_2 = mean(confidence_2, na.rm = TRUE)) %>%
+  ggplot(aes(confidence, confidence_2, col = accuracy)) +
+  scale_color_brewer(
+    "Accuracy",
+    palette = "Set1", aesthetics = c("color", "fill")
+  ) +
+  coord_cartesian(ylim = c(0, 100)) +
+  scale_x_discrete("Confidence", expand = expansion(.1)) +
+  scale_y_continuous("Confidence (2)", breaks = pretty_breaks(3)) +
+  geom_quasirandom(
+    width = .05, shape = 1, dodge.width = .3, alpha = 0.5, size = 1
+  ) +
+  stat_summary(
+    fun = mean, geom = "line", aes(group = accuracy),
+    position = position_dodge(.3), show.legend = FALSE,
+    size = .25
+  ) +
+  stat_summary(
+    fun.data = mean_cl_boot, position = position_dodge(.3),
+    fatten = 2.5
+  )
+e10_p2
+```
+
+### ANOVA
+
+Three bins
+
+```{r e10-anova}
+dat10_aov <- dat10 %>%
+  drop_na(confidence_2) %>% 
+  mutate(conf_bin = cut(confidence, 3)) %>%
+  group_by(subject, accuracy, conf_bin) %>%
+  summarise(confidence_2 = mean(confidence_2, na.rm = TRUE))
+
+fit_aov <- aov_ez(
+  data = dat10_aov,
+  id = "subject",
+  dv = "confidence_2",
+  within = c("conf_bin", "accuracy")
+)
+anova(fit_aov, intercept = TRUE) %>%
+  kbl(
+    digits = c(rep(1, 5), 4),
+    caption = "Experiment 10 ANOVA"
+  ) %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Multilevel model
+
+```{r e10-brm-fit}
+hmc$formula <- confidence_2 ~ (c1 + c2) * accuracy +
+  ((c1 + c2) * accuracy | subject) + 
+  (1 | item)
+hmc$data <- dat10
+hmc$file <- "models/brm-exp10-a"
+fit10.a <- do.call(brm, hmc)
+
+hmc$formula <- confidence_2 ~ c1 * accuracy +
+  (c1 * accuracy | subject) + 
+  (1 | item)
+hmc$file <- "models/brm-exp10-b"
+fit10.b <- do.call(brm, hmc)
+```
+
+Model comparison favored neither model strongly
+
+```{r e10-waic}
+waic10 <- waicm(fit10.a, fit10.b)
+waic10$diffs
+```
+
+Model summary
+
+```{r e10-brm-summary}
+describe_posterior(
+  fit10.a,
+  test = "pd", ci = 0.95, centrality = "mean",
+  effects = "fixed", diagnostic = NULL, dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2, caption = "Experiment 10 model summary") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Linear effect in each cell and differences therein
+
+```{r e10-contrasts-linear}
+# Effect in each cell
+emm <- emtrends(
+  fit9.a,
+  var = "c1", by = c("accuracy"),
+  at = list(c1 = 0, c2 = -32.9)
+)
+describe_posterior(
+  emm,
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2, caption = "Experiment 10 linear trends") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Quadratic effect in each cell and differences therein
+
+```{r e10-contrasts-quadratic}
+# Effect in each cell
+emm <- emtrends(
+  fit9.a,
+  var = "c2", by = c("accuracy"),
+  at = list(c1 = 0, c2 = -32.9)
+)
+describe_posterior(
+  emm,
+  test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+) %>%
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2, caption = "experiment 10 quadratic trends") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+Post hoc tests
+
+```{r e10-post-hoc}
+ats <- distinct(dat10, confidence, c1, c2) %>%
+  arrange(c1) %>% 
+  filter(confidence %in% c(10, 50, 90)) %>% 
+  mutate(across(c1:c2, ~round(.)))
+emm1 <- emmeans(
+  fit9.a,
+  "accuracy",
+  by = c("c1", "c2"),
+  at = list(c1 = ats$c1[1], c2 = ats$c2[1])
+)
+emm2 <- emmeans(
+  fit9.a,
+  "accuracy",
+  by = c("c1", "c2"),
+  at = list(c1 = ats$c1[2], c2 = ats$c2[2])
+)
+emm3 <- emmeans(
+  fit9.a,
+  "accuracy",
+  by = c("c1", "c2"),
+  at = list(c1 = ats$c1[3], c2 = ats$c2[3])
+)
+
+bind_rows(
+  describe_posterior(
+    pairs(emm1, reverse = TRUE),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  ),
+  describe_posterior(
+    pairs(emm2, reverse = TRUE),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  ),
+  describe_posterior(
+    pairs(emm3, reverse = TRUE),
+    test = "pd", ci = 0.95, centrality = "mean", dispersion = TRUE
+  )
+) %>% 
+  mutate(pd = percent(pd, .01)) %>%
+  kbl(digits = 2, caption = "Experiment 10 contrasts") %>% 
+  kable_classic(html_font = "Arial", full_width = FALSE)
+```
+
+### Model figure
+
+```{r e10-brm-figure}
+e10_tmp1 <- distinct(
+  dat10, subject, accuracy, c1, c2
+) %>%
+  add_epred_draws(
+    fit10.a,
+    re_formula = ~ ((c1 + c2) * accuracy | subject)
+  ) %>%
+  mean_qi(.width = .95) %>%
+  ungroup()
+e10_tmp2 <- distinct(
+  dat10, accuracy, c1, c2
+) %>%
+  add_epred_draws(fit10.a, re_formula = NA) %>%
+  mean_qi(.width = .95) %>% 
+  mutate(accuracy = fct_rev(accuracy))
+e10_mp1 <- e10_tmp1 %>%
+  mutate(accuracy = fct_rev(accuracy)) %>% 
+  ggplot(aes(c1 + 50, .epred, col = accuracy, fill = accuracy)) +
+  scale_color_manual(
+    values = Palette[1:2], aesthetics = c("color", "fill")
+  ) +
+  scale_x_continuous("Confidence", expand = expansion(.01)) +
+  scale_y_continuous("Knowledge of Answer after False Feedback") +
+  coord_cartesian(ylim = c(0, 100)) +
+  geom_line(
+    aes(group = interaction(subject, accuracy)),
+    size = .2, alpha = 1 / 3
+  ) +
+  geom_ribbon(
+    data = e10_tmp2, aes(ymin = .lower, ymax = .upper),
+    col = NA, alpha = .33
+  ) +
+  geom_line(data = e10_tmp2, size = 1) +
+  theme(
+    aspect.ratio = 1,
+    legend.title = element_blank()
+    )
+e10_mp1
+
+ggsave("figures/Fig13.png", dpi = 300, width = 9, height = 3.5)
+ggsave("figures/Fig13.pdf", dpi = 300, width = 9, height = 3.5)
+```
+
+## System information {.appendix}
+
+```{r sysinfo}
+options(width = 120)
+sessionInfo()
+```

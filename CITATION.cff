@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+title: |
+  Code and data supplement to "Curiosity: the effects of feedback and confidence on the desire to know"
+version: 1.0.0
+license: CC-BY-4.0
+type: dataset
+abstract: |
+  In 10 experiments, we investigated the relations among curiosity and people's confidence in their answers to general information questions after receiving different kinds of feedback: yes/no feedback, true or false informational feedback under uncertainty, or no feedback. The results showed that when people had given a correct answer, yes/no feedback resulted in a near complete loss of curiosity. Upon learning they had made an error via yes/no feedback, curiosity increased, especially for high-confidence errors. When people were given true feedback under uncertainty (they were given the correct answer but were not told that it was correct), curiosity increased for high-confidence errors but was unchanged for correct responses. In contrast, when people were given false feedback under uncertainty, curiosity increased for high-confidence correct responses but was unchanged for errors. These results, taken as a whole, are consistent with the region of proximal learning model which proposes that while curiosity is minimal when people are completely certain that they know the answer, it is maximal when people believe that they almost know. Manipulations that drew participants toward this region of “almost knowing” resulted in increased curiosity. A serendipitous result was the finding (replicated four times in this study) that when no feedback was given, people were more curious about high-confidence errors than they were about equally high-confidence correct answers. It was as if they had some knowledge, tapped selectively by their feelings of curiosity, that there was something special (and possibly amiss) about high-confidence errors.
+message: |
+  Please cite as indicated.
+authors:
+  - family-names: Metcalfe
+    given-names: Janet
+    orcid: https://orcid.org/0000-0003-3286-9475
+    affiliation: Columbia University
+  - family-names: Vuorre
+    given-names: Matti
+    orcid: https://orcid.org/0000-0001-5052-066X
+    affiliation: Tilburg University
+  - family-names: Towner
+    given-names: Emily
+    orcid: https://orcid.org/0000-0002-0982-6509
+    affiliation: University of Cambridge
+  - family-names: Eich
+    given-names: Teal
+    orcid: https://orcid.org/0000-0003-4094-3276
+    affiliation: University of Southern California
+identifiers:
+  - type: doi
+    value: 10.1037/xge0001284
+keywords:
+  - psychology
